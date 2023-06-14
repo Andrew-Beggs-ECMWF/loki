@@ -10,7 +10,7 @@ import pytest
 
 from conftest import available_frontends
 from loki import (
-    Scheduler, Subroutine, Dimension, FindNodes, Loop, Assignment,
+    Scheduler, Subroutine, Dimension, FindNodes, Loop, Assignment, fgen,
     CallStatement, Allocation, Deallocation, VariableDeclaration, Import, FindVariables
 )
 from loki.transform import HoistTemporaryArraysAnalysis, ParametriseTransformation
@@ -251,6 +251,13 @@ def test_scc_cuf_parametrise(here, frontend, config, horizontal, vertical, block
     check_subroutine_device(routine=scheduler.item_map["kernel_mod#device"].routine, horizontal=horizontal,
                             vertical=vertical, blocking=blocking)
     check_subroutine_elemental_device(routine=scheduler.item_map["kernel_mod#elemental_device"].routine)
+
+    print(fgen(scheduler.item_map["driver_mod#driver"].routine))
+    print(fgen(scheduler.item_map["kernel_mod#kernel"].routine))
+    print(fgen(scheduler.item_map["kernel_mod#device"].routine))
+    print(fgen(scheduler.item_map["kernel_mod#elemental_device"].routine))
+
+    assert False
 
     # check for parametrised variables
     vars2p = list(dic2p.keys())

@@ -81,15 +81,20 @@ using the transformation
     dic2p = {'a': 10}
     scheduler.process(transformation=ParametriseTransformation(dic2p=dic2p, replace_by_value=True))
 """
+import pdb
 from loki.expression import symbols as sym
+from loki.expression.symbols import Variable
 from loki import ir
 from loki.visitors import Transformer, FindNodes
 from loki.tools.util import is_iterable, as_tuple
 from loki.transform.transformation import Transformation
 from loki.transform.transform_inline import inline_constant_parameters
+from loki.transform.transform_utilities import single_variable_declaration
+from loki.types import SymbolAttributes, BasicType
+from loki.expression.expr_visitors import SubstituteExpressions
 
 
-__all__ = ['ParametriseTransformation']
+__all__ = ['ParametriseTransformation', 'ParametriseDeclarationTransformation']
 
 
 class ParametriseTransformation(Transformation):
@@ -263,7 +268,8 @@ class ParametriseTransformation(Transformation):
             # remove variables to be parametrised from all call statements
             call_map = {}
             for call in FindNodes(ir.CallStatement).visit(routine.body):
-                if str(call.name).upper() not in self.disable:
+#                if str(call.name).upper() not in self.disable:
+                if str(call.name).upper() in successor_map:
                     successor_map[str(call.name)].trafo_data[self._key] = {}
                     arg_map = dict(call.arg_iter())
                     arg_map_reversed = {v: k for k, v in arg_map.items()}
@@ -271,7 +277,7 @@ class ParametriseTransformation(Transformation):
                     for index in indices:
                         name = str(call.name)
                         successor_map[name].trafo_data[self._key][str(arg_map_reversed[call.arguments[index]])] = \
-                            dic2p[call.arguments[index].name]
+                            dic2p[call.arguments[index].name.lower()]
                     arguments = tuple(arg for arg in call.arguments if arg not in vars2p)
                     call_map[call] = call.clone(arguments=arguments)
             routine.body = Transformer(call_map).visit(routine.body)
@@ -305,3 +311,47 @@ class ParametriseTransformation(Transformation):
             # replace all parameter variables with their corresponding value (inline constant parameters)
             if self.replace_by_value:
                 inline_constant_parameters(routine=routine, external_only=False)
+
+
+class ParametriseDeclarationTransformation(Transformation):
+
+    def __init__(self, dic2p):
+        self.dic2p = dic2p
+
+
+    def transform_subroutine(self, routine, **kwargs):
+        item = kwargs.get('item', None)
+        role = kwargs.get('role', None)
+
+        if item and not item.local_name == routine.name.lower():
+            return
+
+        if role == 'driver':
+            return
+
+        # Find original variable if declared
+        orig_decs = tuple(routine.variable_map.get(v.lower(), None) for v in self.dic2p)
+        if orig_decs:
+            single_variable_declaration(routine, variables=orig_decs)
+        orig_decs = [decl for decl in FindNodes(ir.VariableDeclaration).visit(routine.spec)
+                     if any(v in decl.symbols for v in self.dic2p)]
+
+        # define types
+        types = {v: SymbolAttributes(BasicType.INTEGER, parameter=True, intent=None, initial=sym.IntLiteral(p))
+                 for v, p in self.dic2p.items()}
+
+#        decls = tuple(decl for decl in FindNodes(ir.VariableDeclaration).visit(routine.spec)
+#                 if not any(s in routine.arguments for s in decl.symbols))
+        decls = [decl for decl in FindNodes(ir.VariableDeclaration).visit(routine.spec)
+                 if not decl in orig_decs]
+
+        vmap = {routine.symbol_map[v]: Variable(name=f'{v.upper()}_LOKI_PARAM', type=types[v])
+                for v in self.dic2p if v in routine.symbol_map}
+
+        new_decls = SubstituteExpressions(vmap).visit(decls)
+        mapper = {o: n for o, n in zip(decls, new_decls)}
+        routine.spec = Transformer(mapper).visit(routine.spec)
+
+        pos = routine.spec.body.index(new_decls[0])
+        routine.spec.insert(pos, as_tuple(ir.VariableDeclaration(symbols=as_tuple(
+                            Variable(name=f'{v.upper()}_LOKI_PARAM', type=types[v]))) for v in self.dic2p))

@@ -187,7 +187,7 @@ def kernel_cuf(routine, horizontal, vertical, block_dim, transformation_type,
         Tuple of subroutine call names that are processed in this traversal
     """
 
-    if is_elemental(routine):
+    if is_elemental(routine) or SCCBaseTransformation.check_routine_pragmas(routine, None):
         # TODO: correct "definition" of elemental/pure routines and corresponding removing
         #  of subroutine prefix(es)/specifier(s)
         routine.prefix = as_tuple([prefix for prefix in routine.prefix if prefix not in ["ELEMENTAL"]])
@@ -384,90 +384,90 @@ def driver_device_variables(routine, targets=None):
     i_type = SymbolAttributes(types.BasicType.INTEGER)
     routine.spec.append(ir.VariableDeclaration(symbols=(sym.Variable(name="istat", type=i_type),)))
 
-    relevant_arrays = []
-    calls = tuple(
-        call for call in FindNodes(ir.CallStatement).visit(routine.body)
-        if call.name in as_tuple(targets)
-    )
-    for call in calls:
-        relevant_arrays.extend([arg for arg in call.arguments if isinstance(arg, sym.Array)])
-
-    relevant_arrays = list(dict.fromkeys(relevant_arrays))
-
-    # Declaration
-    routine.spec.append(ir.Comment(''))
-    routine.spec.append(ir.Comment('! Device arrays'))
-    for array in relevant_arrays:
-        vtype = array.type.clone(device=True, allocatable=True, intent=None, shape=None)
-        vdimensions = [sym.RangeIndex((None, None))] * len(array.dimensions)
-        var = array.clone(name=f"{array.name}_d", type=vtype, dimensions=as_tuple(vdimensions))
-        routine.spec.append(ir.VariableDeclaration(symbols=as_tuple(var)))
-
-    # Allocation
-    for array in reversed(relevant_arrays):
-        vtype = array.type.clone(device=True, allocatable=True, intent=None, shape=None)
-        routine.body.prepend(ir.Allocation((array.clone(name=f"{array.name}_d", type=vtype,
-                                                        dimensions=routine.variable_map[array.name].dimensions),)))
-    routine.body.prepend(ir.Comment('! Device array allocation'))
-    routine.body.prepend(ir.Comment(''))
-
-    allocations = FindNodes(ir.Allocation).visit(routine.body)
-    if allocations:
-        insert_index = routine.body.body.index(allocations[-1]) + 1
-    else:
-        insert_index = None
-    # or: insert_index = routine.body.body.index(calls[0])
-    # Copy host to device
-    for array in reversed(relevant_arrays):
-        vtype = array.type.clone(device=True, allocatable=True, intent=None, shape=None)
-        lhs = array.clone(name=f"{array.name}_d", type=vtype, dimensions=None)
-        rhs = array.clone(dimensions=None)
-        if insert_index is not None:
-            routine.body.insert(insert_index, ir.Assignment(lhs=lhs, rhs=rhs))
-        else:
-            routine.body.prepend(ir.Assignment(lhs=lhs, rhs=rhs))
-    routine.body.insert(insert_index, ir.Comment('! Copy host to device'))
-    routine.body.insert(insert_index, ir.Comment(''))
-
-    # TODO: this just assumes that host-device-synchronisation is only needed at the beginning and end
-    # Copy device to host
-    insert_index = None
-    for call in FindNodes(ir.CallStatement).visit(routine.body):
-        if "THREAD_END" in str(call.name):  # TODO: fix/check: very specific to CLOUDSC
-            insert_index = routine.body.body.index(call) + 1
-
-    if insert_index is None:
-        routine.body.append(ir.Comment(''))
-        routine.body.append(ir.Comment('! Copy device to host'))
-    for v in reversed(relevant_arrays):
-        if v.type.intent != "in":
-            lhs = v.clone(dimensions=None)
-            vtype = v.type.clone(device=True, allocatable=True, intent=None, shape=None)
-            rhs = v.clone(name=f"{v.name}_d", type=vtype, dimensions=None)
-            if insert_index is None:
-                routine.body.append(ir.Assignment(lhs=lhs, rhs=rhs))
-            else:
-                routine.body.insert(insert_index, ir.Assignment(lhs=lhs, rhs=rhs))
-    if insert_index is not None:
-        routine.body.insert(insert_index, ir.Comment('! Copy device to host'))
-
-    # De-allocation
-    routine.body.append(ir.Comment(''))
-    routine.body.append(ir.Comment('! De-allocation'))
-    for array in relevant_arrays:
-        routine.body.append(ir.Deallocation((array.clone(name=f"{array.name}_d", dimensions=None),)))
-
-    call_map = {}
-    for call in calls:
-        arguments = []
-        for arg in call.arguments:
-            if arg in relevant_arrays:
-                vtype = arg.type.clone(device=True, allocatable=True, shape=None, intent=None)
-                arguments.append(arg.clone(name=f"{arg.name}_d", type=vtype, dimensions=None))
-            else:
-                arguments.append(arg)
-        call_map[call] = call.clone(arguments=as_tuple(arguments))
-    routine.body = Transformer(call_map).visit(routine.body)
+#    relevant_arrays = []
+#    calls = tuple(
+#        call for call in FindNodes(ir.CallStatement).visit(routine.body)
+#        if call.name in as_tuple(targets)
+#    )
+#    for call in calls:
+#        relevant_arrays.extend([arg for arg in call.arguments if isinstance(arg, sym.Array)])
+#
+#    relevant_arrays = list(dict.fromkeys(relevant_arrays))
+#
+#    # Declaration
+#    routine.spec.append(ir.Comment(''))
+#    routine.spec.append(ir.Comment('! Device arrays'))
+#    for array in relevant_arrays:
+#        vtype = array.type.clone(device=True, allocatable=True, intent=None, shape=None)
+#        vdimensions = [sym.RangeIndex((None, None))] * len(array.dimensions)
+#        var = array.clone(name=f"{array.name}_d", type=vtype, dimensions=as_tuple(vdimensions))
+#        routine.spec.append(ir.VariableDeclaration(symbols=as_tuple(var)))
+#
+#    # Allocation
+#    for array in reversed(relevant_arrays):
+#        vtype = array.type.clone(device=True, allocatable=True, intent=None, shape=None)
+#        routine.body.prepend(ir.Allocation((array.clone(name=f"{array.name}_d", type=vtype,
+#                                                        dimensions=routine.variable_map[array.name].dimensions),)))
+#    routine.body.prepend(ir.Comment('! Device array allocation'))
+#    routine.body.prepend(ir.Comment(''))
+#
+#    allocations = FindNodes(ir.Allocation).visit(routine.body)
+#    if allocations:
+#        insert_index = routine.body.body.index(allocations[-1]) + 1
+#    else:
+#        insert_index = None
+#    # or: insert_index = routine.body.body.index(calls[0])
+#    # Copy host to device
+#    for array in reversed(relevant_arrays):
+#        vtype = array.type.clone(device=True, allocatable=True, intent=None, shape=None)
+#        lhs = array.clone(name=f"{array.name}_d", type=vtype, dimensions=None)
+#        rhs = array.clone(dimensions=None)
+#        if insert_index is not None:
+#            routine.body.insert(insert_index, ir.Assignment(lhs=lhs, rhs=rhs))
+#        else:
+#            routine.body.prepend(ir.Assignment(lhs=lhs, rhs=rhs))
+#    routine.body.insert(insert_index, ir.Comment('! Copy host to device'))
+#    routine.body.insert(insert_index, ir.Comment(''))
+#
+#    # TODO: this just assumes that host-device-synchronisation is only needed at the beginning and end
+#    # Copy device to host
+#    insert_index = None
+#    for call in FindNodes(ir.CallStatement).visit(routine.body):
+#        if "THREAD_END" in str(call.name):  # TODO: fix/check: very specific to CLOUDSC
+#            insert_index = routine.body.body.index(call) + 1
+#
+#    if insert_index is None:
+#        routine.body.append(ir.Comment(''))
+#        routine.body.append(ir.Comment('! Copy device to host'))
+#    for v in reversed(relevant_arrays):
+#        if v.type.intent != "in":
+#            lhs = v.clone(dimensions=None)
+#            vtype = v.type.clone(device=True, allocatable=True, intent=None, shape=None)
+#            rhs = v.clone(name=f"{v.name}_d", type=vtype, dimensions=None)
+#            if insert_index is None:
+#                routine.body.append(ir.Assignment(lhs=lhs, rhs=rhs))
+#            else:
+#                routine.body.insert(insert_index, ir.Assignment(lhs=lhs, rhs=rhs))
+#    if insert_index is not None:
+#        routine.body.insert(insert_index, ir.Comment('! Copy device to host'))
+#
+#    # De-allocation
+#    routine.body.append(ir.Comment(''))
+#    routine.body.append(ir.Comment('! De-allocation'))
+#    for array in relevant_arrays:
+#        routine.body.append(ir.Deallocation((array.clone(name=f"{array.name}_d", dimensions=None),)))
+#
+#    call_map = {}
+#    for call in calls:
+#        arguments = []
+#        for arg in call.arguments:
+#            if arg in relevant_arrays:
+#                vtype = arg.type.clone(device=True, allocatable=True, shape=None, intent=None)
+#                arguments.append(arg.clone(name=f"{arg.name}_d", type=vtype, dimensions=None))
+#            else:
+#                arguments.append(arg)
+#        call_map[call] = call.clone(arguments=as_tuple(arguments))
+#    routine.body = Transformer(call_map).visit(routine.body)
 
 
 def driver_launch_configuration(routine, block_dim, targets=None):
@@ -508,11 +508,11 @@ def driver_launch_configuration(routine, block_dim, targets=None):
 
                 mapper[call] = (call.clone(chevron=(routine.variable_map["GRIDDIM"],
                                                     routine.variable_map["BLOCKDIM"]),
-                                           arguments=call.arguments + (routine.variable_map[block_dim.size],)),
+                                           arguments=call.arguments + (routine.imported_symbol_map[block_dim.size],)),
                                 ir.Assignment(lhs=assignment_lhs, rhs=assignment_rhs))
 
             if kernel_within:
-                upper = routine.variable_map[loop.bounds.children[1].name]
+                upper = routine.imported_symbol_map[loop.bounds.children[1].name]
                 if loop.bounds.children[2]:
                     step = routine.variable_map[loop.bounds.children[2].name]
                 else:
