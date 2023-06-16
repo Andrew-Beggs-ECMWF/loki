@@ -5,7 +5,6 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
-import pdb
 from collections import defaultdict
 from loki import (
     pragma_regions_attached, PragmaRegion, Transformation, FindNodes,
@@ -448,7 +447,7 @@ class GlobalVarOffloadTransformation(Transformation):
 
         # add new imports to driver subroutine sepcification
         import_pos = 0
-        if (old_imports := FindNodes(Import).visit(routine.spec)):
+        if (old_imports := [i for i in routine.imports if not i.c_import]):
             import_pos = routine.spec.body.index(old_imports[-1]) + 1
         if new_imports:
             routine.spec.insert(import_pos, Comment(text=
@@ -610,4 +609,3 @@ class GlobalVarOffloadTransformation(Transformation):
             routine.spec = SubstituteExpressions(vmap).visit(routine.spec)
             if deriv_types:
                 warning(f'[Loki::GlobalVarOffload] Derived-type offload not supported for CUDA Fortran - {routine}')
-
