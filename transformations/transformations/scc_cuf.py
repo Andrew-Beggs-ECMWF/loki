@@ -9,13 +9,14 @@
 Single-Column-Coalesced CUDA Fortran (SCC-CUF) transformation.
 """
 
+import pdb
 from loki.expression import symbols as sym
 from loki.transform import resolve_associates, single_variable_declaration, HoistVariablesTransformation
 from loki import ir
 from loki import (
     Transformation, FindNodes, FindVariables, Transformer,
     SubstituteExpressions, SymbolAttributes,
-    CaseInsensitiveDict, as_tuple, flatten, types
+    CaseInsensitiveDict, as_tuple, flatten, types, fgen
 )
 
 from transformations.single_column_coalesced import SCCBaseTransformation
@@ -194,9 +195,13 @@ def kernel_cuf(routine, horizontal, vertical, block_dim, transformation_type,
         return
 
     kernel_demote_private_locals(routine, horizontal, vertical)
+#    print(fgen(routine.spec))
 
     if depth > 1:
         single_variable_declaration(routine, variables=(horizontal.index, block_dim.index))
+
+    # Map variables to declarations
+    decl_map = dict((v, decl) for decl in routine.declarations for v in decl.symbols)
 
     # This adds argument and variable declaration !
     vtype = routine.variable_map[horizontal.size].type.clone(intent='in', value=True)
@@ -266,7 +271,10 @@ def kernel_cuf(routine, horizontal, vertical, block_dim, transformation_type,
                         dimensions.remove(horizontal.size)
                         relevant_local_arrays.append(var.name)
                         vtype = var.type.clone(device=True)
-                    var_map[var] = var.clone(dimensions=as_tuple(dimensions), type=vtype)
+                        var_map[var] = var.clone(dimensions=as_tuple(dimensions), type=vtype)
+                        if any(s in decl_map[var].dimensions for s in horizontal.size_expressions):
+                            dimensions = decl_map[var].dimensions[1:]
+                            decl_map[var]._update(dimensions=dimensions)
 
     routine.spec = SubstituteExpressions(var_map).visit(routine.spec)
 
@@ -325,6 +333,9 @@ def kernel_demote_private_locals(routine, horizontal, vertical):
         The dimension object specifying the vertical loop dimension
     """
 
+    # Map variables to declarations
+    decl_map = dict((v, decl) for decl in routine.declarations for v in decl.symbols)
+
     # Establish the new dimensions and shapes first, before cloning the variables
     # The reason for this is that shapes of all variable instances are linked
     # via caching, meaning we can easily void the shape of an unprocessed variable.
@@ -358,6 +369,10 @@ def kernel_demote_private_locals(routine, horizontal, vertical):
             new_type = v.type.clone(shape=new_shape or None)
             new_dims = v.dimensions[1:] or None
             vmap[v] = v.clone(dimensions=new_dims, type=new_type)
+            if v in decl_map:
+                if any(s in decl_map[v].dimensions for s in horizontal.size_expressions):
+                    dimensions = decl_map[v].dimensions[1:]
+                    decl_map[v]._update(dimensions=dimensions)
 
     routine.body = SubstituteExpressions(vmap).visit(routine.body)
     routine.spec = SubstituteExpressions(vmap).visit(routine.spec)

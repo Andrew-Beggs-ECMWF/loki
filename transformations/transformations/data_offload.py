@@ -5,12 +5,17 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
+import pdb
+from collections import defaultdict
 from loki import (
     pragma_regions_attached, PragmaRegion, Transformation, FindNodes,
     CallStatement, Pragma, Array, as_tuple, Transformer, warning, BasicType,
     GlobalVarImportItem, SubroutineItem, dataflow_analysis_attached, Import,
-    Comment, Variable, flatten, DerivedType, get_pragma_parameters, CaseInsensitiveDict
+    Comment, Variable, flatten, DerivedType, get_pragma_parameters, CaseInsensitiveDict,
+    SubstituteExpressions, FindVariables, ProcedureSymbol, InlineCall, Allocation,
+    Deallocation, Product
 )
+from transformations.pool_allocator import TemporariesPoolAllocatorTransformation
 
 
 __all__ = ['DataOffloadTransformation', 'GlobalVarOffloadTransformation']
@@ -275,9 +280,11 @@ class GlobalVarOffloadTransformation(Transformation):
 
     _key = 'GlobalVarOffloadTransformation'
 
-    def __init__(self, key=None):
+    def __init__(self, key=None, cuf=None):
         if key:
             self._key = key
+
+        self.cuf = cuf
 
     def transform_module(self, module, **kwargs):
         """
@@ -309,11 +316,27 @@ class GlobalVarOffloadTransformation(Transformation):
                                  for v in as_tuple(acc_pragma_parameters['create'])]):
                 return
 
+        if self.cuf:
+             if f'{symbol}_d'.lower() in module.variables:
+                 return
+
+
         # Update the set of variables to be offloaded
         item.trafo_data[self._key]['var_set'].add(symbol)
 
-        # Write ACC declare pragma
-        module.spec.append(Pragma(keyword='acc', content=f'declare create({symbol})'))
+        if self.cuf:
+            # Add USE CUDAFOR import
+            if not 'cudafor' in [i.module.lower() for i in module.imports]:
+                module.spec.prepend(as_tuple(Import(module='CUDAFOR')))
+
+            # Add CUDA device variable declaration
+            var = module.symbol_map[symbol]
+            device_var = var.clone(name=f'{var.name}_D', type=var.type.clone(device=True))
+            module.variables += as_tuple(device_var)
+
+        else:
+            # Write ACC declare pragma
+            module.spec.append(Pragma(keyword='acc', content=f'declare create({symbol})'))
 
     def transform_subroutine(self, routine, **kwargs):
 
@@ -330,6 +353,9 @@ class GlobalVarOffloadTransformation(Transformation):
         item.trafo_data[self._key]['exit_data'] = set()
         item.trafo_data[self._key]['acc_copyin'] = set()
         item.trafo_data[self._key]['acc_copyout'] = set()
+        if self.cuf:
+            item.trafo_data[self._key]['allocatables'] = set()
+            item.trafo_data[self._key]['import_types'] = {}
 
         successors = kwargs.get('successors', ())
         if role == 'driver':
@@ -394,6 +420,9 @@ class GlobalVarOffloadTransformation(Transformation):
             *[s.trafo_data.get(self._key, {}).get('var_set', set()) for s in successors],
             set()
         )
+        if self.cuf:
+            _device_var_map = {f'{v}_d': v for v in _var_set}
+
         #build map of module imports corresponding to offloaded symbols
         _modules = {}
         _modules.update({k: v
@@ -401,15 +430,17 @@ class GlobalVarOffloadTransformation(Transformation):
                          for k, v in s.trafo_data[self._key]['modules'].items()})
 
         # build new imports to add offloaded global vars to driver symbol table
-        new_import_map = {}
+        new_import_map = defaultdict(tuple)
         for s in _var_set:
             if s in routine.symbol_map:
                 continue
+            new_import_map[_modules[s]] += as_tuple(s)
+        if self.cuf:
+            for dev, host in _device_var_map.items():
+                if dev in routine.symbol_map:
+                    continue
+                new_import_map[_modules[host]] += as_tuple(dev)
 
-            if new_import_map.get(_modules[s], None):
-                new_import_map[_modules[s]] += as_tuple(s)
-            else:
-                new_import_map.update({_modules[s]: as_tuple(s)})
 
         new_imports = ()
         for k, v in new_import_map.items():
@@ -424,6 +455,53 @@ class GlobalVarOffloadTransformation(Transformation):
                '![Loki::GlobalVarOffload].....Adding global variables to driver symbol table for offload instructions'))
             import_pos += 1
             routine.spec.insert(import_pos, new_imports)
+
+        # add device array allocations and map host data to device
+        if self.cuf:
+            body_prepend = ()
+            body_append = ()
+
+            # Add USE CUDAFOR import
+            if not 'cudafor' in [i.module.lower() for i in routine.imports]:
+                routine.spec.prepend(as_tuple(Import(module='CUDAFOR')))
+            # Add USE OPENACC import
+            if not 'openacc' in [i.module.lower() for i in routine.imports]:
+                routine.spec.prepend(as_tuple(Import(module='OPENACC')))
+            # Import C_SIZEOF
+            TemporariesPoolAllocatorTransformation.import_c_sizeof(routine)
+
+            # collect the list of allocatable imports
+            allocatables = set.union(*[s.trafo_data[self._key]['allocatables']
+                                       for s in successors if isinstance(s, SubroutineItem)], set())
+
+            # collect the map of import_types
+            import_types = {k: v
+                         for s in successors if isinstance(s, SubroutineItem)
+                         for k, v in s.trafo_data[self._key]['import_types'].items()}
+
+            for dev, host in _device_var_map.items():
+                host_var = routine.symbol_map[host].clone(type=import_types[host])
+                if dev in allocatables:
+                    body_prepend += as_tuple(Allocation(variables=as_tuple(routine.symbol_map[dev]),
+                                                        data_source=host_var))
+
+                c_sizeof = TemporariesPoolAllocatorTransformation._get_c_sizeof_arg(host_var)
+                c_sizeof = InlineCall(routine.imported_symbol_map['c_sizeof'], parameters=as_tuple(c_sizeof))
+                product = c_sizeof
+                if isinstance(host_var, Array):
+                    product = Product((InlineCall(ProcedureSymbol('SIZE', scope=routine),
+                                         parameters=as_tuple(host_var)), product))
+
+                body_prepend += as_tuple(CallStatement(ProcedureSymbol(name='ACC_MAP_DATA', scope=routine),
+                                         arguments=(routine.symbol_map[host], routine.symbol_map[dev], product)))
+                body_append += as_tuple(CallStatement(ProcedureSymbol(name='ACC_UNMAP_DATA', scope=routine),
+                                                      arguments=as_tuple(routine.symbol_map[host])))
+
+                if dev in allocatables:
+                    body_append += as_tuple(Deallocation(variables=as_tuple(routine.symbol_map[dev])))
+            routine.body.prepend(body_prepend)
+            routine.body.append(body_append)
+
 
     def process_kernel(self, routine, successors, item):
         """
@@ -470,7 +548,7 @@ class GlobalVarOffloadTransformation(Transformation):
 
             # collect symbols to add to acc update pragmas in driver layer
             for basic in basic_types:
-                if basic in routine.body.uses_symbols:
+                if basic in routine.body.uses_symbols or basic in routine.spec.uses_symbols:
                     item.trafo_data[self._key]['acc_copyin'].add(basic)
                     item.trafo_data[self._key]['modules'].update({basic: import_mod[basic]})
                 if basic in routine.body.defines_symbols:
@@ -502,3 +580,34 @@ class GlobalVarOffloadTransformation(Transformation):
                             if not symbol in item.trafo_data[self._key]['enter_data_copyin'] and var.type.allocatable:
                                 item.trafo_data[self._key]['enter_data_create'].add(symbol)
                                 item.trafo_data[self._key]['modules'].update({deriv: import_mod[deriv.name.lower()]})
+
+        # Replace host-side module variables with device copy
+        if self.cuf:
+
+            # collect the list of allocatable imports
+            item.trafo_data[self._key]['allocatables'] = set.union(
+                                                       *[s.trafo_data[self._key]['allocatables']
+                                                         for s in successors if isinstance(s, SubroutineItem)], set())
+            item.trafo_data[self._key]['allocatables'] |= set(
+                                        routine.imported_symbol_map[s].clone(name=f'{s}_d'.upper()) for s in basic_types
+                                        if routine.imported_symbol_map[s].type.allocatable)
+
+            # build map of import types
+            item.trafo_data[self._key]['import_types'].update({k: v
+                                                         for s in successors if isinstance(s, SubroutineItem)
+                                                         for k, v in s.trafo_data[self._key]['import_types'].items()})
+
+            item.trafo_data[self._key]['import_types'].update({s: routine.symbol_map[s].type
+                                                         for s in basic_types})
+
+            varlist = [v for v in FindVariables(unique=False).visit(routine.body) if v.name.lower() in basic_types]
+            _vmap = {v: v.clone(name=f'{v.name}_d'.upper()) for v in varlist}
+            vmap = {v: SubstituteExpressions(_vmap).visit(_vmap[v]) for v in _vmap}
+            routine.body = SubstituteExpressions(vmap).visit(routine.body)
+
+            vmap = {routine.imported_symbol_map[v]: routine.imported_symbol_map[v].clone(name=f'{v}_d'.upper())
+                    for v in basic_types}
+            routine.spec = SubstituteExpressions(vmap).visit(routine.spec)
+            if deriv_types:
+                warning(f'[Loki::GlobalVarOffload] Derived-type offload not supported for CUDA Fortran - {routine}')
+

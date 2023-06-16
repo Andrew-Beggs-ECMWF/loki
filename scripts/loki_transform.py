@@ -25,7 +25,8 @@ from loki import (
 # Get generalized transformations provided by Loki
 from loki.transform import (
     DependencyTransformation, FortranCTransformation, FileWriteTransformation,
-    ParametriseTransformation, HoistTemporaryArraysAnalysis, normalize_range_indexing
+    ParametriseTransformation, HoistTemporaryArraysAnalysis, normalize_range_indexing,
+    ParametriseDeclarationTransformation
 )
 
 # pylint: disable=wrong-import-order
@@ -195,7 +196,7 @@ def convert(out_path, path, header, cpp, directive, include, define, omni_includ
     scheduler.process(transformation=DerivedTypeArgumentsTransformation())
 
     # Remove DR_HOOK and other utility calls first, so they don't interfere with SCC loop hoisting
-    if 'scc' in mode:
+    if 'scc' in mode or 'cuf' in mode:
         scheduler.process(transformation=RemoveCallsTransformation(
             routines=config.default.get('utility_routines', None) or ['DR_HOOK', 'ABOR1', 'WRITE(NULOUT'],
             include_intrinsics=True
@@ -240,6 +241,8 @@ def convert(out_path, path, header, cpp, directive, include, define, omni_includ
                                                      directive=directive, block_dim=block_dim,
                                                      hoist_column_arrays='hoist' in mode),)
 
+    dic2p = scheduler.config.dic2p
+    scheduler.process(transformation=ParametriseDeclarationTransformation(dic2p=dic2p))
     if mode in ['cuf-parametrise', 'cuf-hoist', 'cuf-dynamic']:
         horizontal = scheduler.config.dimensions['horizontal']
         vertical = scheduler.config.dimensions['vertical']
@@ -258,7 +261,7 @@ def convert(out_path, path, header, cpp, directive, include, define, omni_includ
         raise RuntimeError('[Loki] Convert could not find specified Transformation!')
 
     if global_var_offload:
-        scheduler.process(transformation=GlobalVarOffloadTransformation(),
+        scheduler.process(transformation=GlobalVarOffloadTransformation(cuf='cuf' in mode),
                           item_filter=(SubroutineItem, GlobalVarImportItem), reverse=True)
 
     if mode in ['idem-stack', 'scc-stack']:
@@ -282,8 +285,8 @@ def convert(out_path, path, header, cpp, directive, include, define, omni_includ
     if mode == 'cuf-parametrise':
         dic2p = scheduler.config.dic2p
         disable = scheduler.config.disable
-        transformation = ParametriseTransformation(dic2p=dic2p, disable=disable)
-        scheduler.process(transformation=transformation)
+#        transformation = ParametriseTransformation(dic2p=dic2p, disable=disable)
+#        scheduler.process(transformation=transformation)
     if mode == "cuf-hoist":
         disable = scheduler.config.disable
         vertical = scheduler.config.dimensions['vertical']
