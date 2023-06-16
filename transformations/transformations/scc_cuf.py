@@ -9,14 +9,13 @@
 Single-Column-Coalesced CUDA Fortran (SCC-CUF) transformation.
 """
 
-import pdb
 from loki.expression import symbols as sym
 from loki.transform import resolve_associates, single_variable_declaration, HoistVariablesTransformation
 from loki import ir
 from loki import (
     Transformation, FindNodes, FindVariables, Transformer,
     SubstituteExpressions, SymbolAttributes,
-    CaseInsensitiveDict, as_tuple, flatten, types, fgen
+    CaseInsensitiveDict, as_tuple, flatten, types
 )
 
 from transformations.single_column_coalesced import SCCBaseTransformation
@@ -195,7 +194,6 @@ def kernel_cuf(routine, horizontal, vertical, block_dim, transformation_type,
         return
 
     kernel_demote_private_locals(routine, horizontal, vertical)
-#    print(fgen(routine.spec))
 
     if depth > 1:
         single_variable_declaration(routine, variables=(horizontal.index, block_dim.index))
@@ -551,7 +549,7 @@ def driver_launch_configuration(routine, block_dim, targets=None):
                                                                                         sym.Cast(name="REAL",
                                                                                                  expression=step)))))
                 griddim_assignment = ir.Assignment(lhs=lhs, rhs=rhs)
-                mapper[loop] = (blockdim_assignment, griddim_assignment, loop.body)
+                mapper[loop] = as_tuple(blockdim_assignment) + as_tuple(griddim_assignment) + loop.body
             else:
                 mapper[loop] = loop.body
 
