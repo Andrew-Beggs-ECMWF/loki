@@ -268,8 +268,7 @@ class ParametriseTransformation(Transformation):
             # remove variables to be parametrised from all call statements
             call_map = {}
             for call in FindNodes(ir.CallStatement).visit(routine.body):
-#                if str(call.name).upper() not in self.disable:
-                if str(call.name).upper() in successor_map:
+                if str(call.name).upper() not in self.disable:
                     successor_map[str(call.name)].trafo_data[self._key] = {}
                     arg_map = dict(call.arg_iter())
                     arg_map_reversed = {v: k for k, v in arg_map.items()}
@@ -277,7 +276,7 @@ class ParametriseTransformation(Transformation):
                     for index in indices:
                         name = str(call.name)
                         successor_map[name].trafo_data[self._key][str(arg_map_reversed[call.arguments[index]])] = \
-                            dic2p[call.arguments[index].name.lower()]
+                            dic2p[call.arguments[index].name]
                     arguments = tuple(arg for arg in call.arguments if arg not in vars2p)
                     call_map[call] = call.clone(arguments=arguments)
             routine.body = Transformer(call_map).visit(routine.body)

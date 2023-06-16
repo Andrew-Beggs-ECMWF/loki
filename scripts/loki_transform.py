@@ -206,7 +206,7 @@ def convert(out_path, path, header, cpp, directive, include, define, omni_includ
 
     # Insert data offload regions for GPUs and remove OpenMP threading directives
     use_claw_offload = True
-    if data_offload:
+    if data_offload and 'cuf' not in mode:
         offload_transform = DataOffloadTransformation(remove_openmp=remove_openmp)
         scheduler.process(transformation=offload_transform)
         use_claw_offload = not offload_transform.has_data_regions
@@ -241,8 +241,12 @@ def convert(out_path, path, header, cpp, directive, include, define, omni_includ
                                                      directive=directive, block_dim=block_dim,
                                                      hoist_column_arrays='hoist' in mode),)
 
-    dic2p = scheduler.config.dic2p
-    scheduler.process(transformation=ParametriseDeclarationTransformation(dic2p=dic2p))
+    if mode == 'cuf-parametrise':
+        dic2p = scheduler.config.dic2p
+        disable = scheduler.config.disable
+#        transformation = ParametriseTransformation(dic2p=dic2p, disable=disable)
+        transformation = ParametriseDeclarationTransformation(dic2p=dic2p)
+        scheduler.process(transformation=transformation)
     if mode in ['cuf-parametrise', 'cuf-hoist', 'cuf-dynamic']:
         horizontal = scheduler.config.dimensions['horizontal']
         vertical = scheduler.config.dimensions['vertical']
@@ -251,7 +255,7 @@ def convert(out_path, path, header, cpp, directive, include, define, omni_includ
         transformation = (SccCufTransformation(
             horizontal=horizontal, vertical=vertical, block_dim=block_dim,
             transformation_type=mode.replace('cuf-', ''),
-            derived_types=derived_types
+            derived_types=derived_types, data_offload=data_offload
         ),)
 
     if transformation:
@@ -282,11 +286,6 @@ def convert(out_path, path, header, cpp, directive, include, define, omni_includ
             block_dim=block_dim, directive=directive, check_bounds='scc' not in mode
         )
         scheduler.process(transformation=transformation, reverse=True)
-    if mode == 'cuf-parametrise':
-        dic2p = scheduler.config.dic2p
-        disable = scheduler.config.disable
-#        transformation = ParametriseTransformation(dic2p=dic2p, disable=disable)
-#        scheduler.process(transformation=transformation)
     if mode == "cuf-hoist":
         disable = scheduler.config.disable
         vertical = scheduler.config.dimensions['vertical']
