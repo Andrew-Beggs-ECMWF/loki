@@ -14,8 +14,8 @@ from loki.transform import resolve_associates, single_variable_declaration, Hois
 from loki import ir
 from loki import (
     Transformation, FindNodes, FindVariables, Transformer,
-    SubstituteExpressions, SymbolAttributes,
-    CaseInsensitiveDict, as_tuple, flatten, types
+    SubstituteExpressions, SymbolAttributes, pragmas_attached,
+    CaseInsensitiveDict, as_tuple, flatten, types, SubroutineItem
 )
 
 from transformations.single_column_coalesced import SCCBaseTransformation
@@ -137,7 +137,8 @@ def remove_pragmas(routine):
     routine: :any:`Subroutine`
         The subroutine in which to remove all pragmas
     """
-    pragma_map = {p: None for p in FindNodes(ir.Pragma).visit(routine.body)}
+    pragmas = [p for p in FindNodes(ir.Pragma).visit(routine.body) if not p.keyword.lower() == 'loki']
+    pragma_map = {p: None for p in pragmas}
     routine.body = Transformer(pragma_map).visit(routine.body)
 
 
@@ -160,8 +161,17 @@ def is_elemental(routine):
     return False
 
 
+def update_successor_driver_vars(call, driver_vars, successors, key):
+    if successors:
+        successor = [s for s in successors if isinstance(s, SubroutineItem)]
+        successor = [s for s in successor if s.routine.name == call.routine.name][0]
+        successor.trafo_data = {key: {'driver_vars': set()}}
+        for rarg, carg in call.arg_iter():
+            if isinstance(rarg, sym.Array) and carg.name.lower() in driver_vars:
+                successor.trafo_data[key]['driver_vars'].add(rarg.name.lower())
+
 def kernel_cuf(routine, horizontal, vertical, block_dim, transformation_type,
-               depth, derived_type_variables, targets=None):
+               depth, derived_type_variables, key, successors, targets=None, item=None):
     """
     For CUDA Fortran (CUF) kernels and device functions: thread mapping, array dimension transformation,
     transforming (call) arguments, ...
@@ -201,16 +211,24 @@ def kernel_cuf(routine, horizontal, vertical, block_dim, transformation_type,
     # Map variables to declarations
     decl_map = dict((v, decl) for decl in routine.declarations for v in decl.symbols)
 
-    # This adds argument and variable declaration !
-    vtype = routine.variable_map[horizontal.size].type.clone(intent='in', value=True)
-    new_argument = routine.variable_map[horizontal.size].clone(name=block_dim.size, type=vtype)
-    routine.arguments = list(routine.arguments) + [new_argument]
+    # Keep optional arguments last; a workaround for the fact that keyword arguments are not supported
+    # in device code
+    arg_pos = [routine.arguments.index(arg) for arg in routine.arguments if arg.type.optional]
 
     vtype = routine.variable_map[horizontal.index].type.clone()
-    jblk_var = routine.variable_map[horizontal.index].clone(name=block_dim.index, type=vtype)
-    routine.spec.append(ir.VariableDeclaration((jblk_var,)))
 
     if depth == 1:
+        jblk_var = routine.variable_map[horizontal.index].clone(name=block_dim.index, type=vtype)
+        routine.spec.append(ir.VariableDeclaration((jblk_var,)))
+
+        # This adds argument and variable declaration !
+        vtype = routine.variable_map[horizontal.size].type.clone(intent='in', value=True)
+        new_argument = as_tuple(routine.variable_map[horizontal.size].clone(name=block_dim.size, type=vtype))
+        if arg_pos:
+            routine.arguments = routine.arguments[:arg_pos[0]] + new_argument + routine.arguments[arg_pos[0]:]
+        else:
+            routine.arguments += new_argument
+
         # CUDA thread mapping
         var_thread_idx = sym.Variable(name="THREADIDX")
         var_x = sym.Variable(name="X", parent=var_thread_idx)
@@ -230,36 +248,64 @@ def kernel_cuf(routine, horizontal, vertical, block_dim, transformation_type,
 
     elif depth > 1:
         vtype = routine.variable_map[horizontal.size].type.clone(intent='in', value=True)
-        new_arguments = [routine.variable_map[horizontal.index].clone(type=vtype), jblk_var.clone(type=vtype)]
-        routine.arguments = list(routine.arguments) + new_arguments
+        new_arguments = as_tuple(routine.variable_map[horizontal.index].clone(type=vtype))
+        if arg_pos:
+            routine.arguments = routine.arguments[:arg_pos[0]] + new_arguments + routine.arguments[arg_pos[0]:]
+        else:
+            routine.arguments += new_arguments
 
     for call in FindNodes(ir.CallStatement).visit(routine.body):
         if call.name not in as_tuple(targets):
             continue
 
-        if not is_elemental(call.routine):
-            arguments = (routine.variable_map[block_dim.size], routine.variable_map[horizontal.index], jblk_var)
-            call._update(arguments=call.arguments + arguments)
+        if not (is_elemental(call.routine) or SCCBaseTransformation.check_routine_pragmas(call.routine, None)):
+
+            # Keep optional arguments last; a workaround for the fact that keyword arguments are not supported
+            # in device code
+            arg_pos = [call.routine.arguments.index(arg) for arg in call.routine.arguments if arg.type.optional]
+            if arg_pos:
+                arguments = call.arguments[:arg_pos[0]]
+                arguments += as_tuple(routine.variable_map[horizontal.index])
+                arguments += call.arguments[arg_pos[0]:]
+            else:
+                arguments = call.arguments
+                arguments += as_tuple(routine.variable_map[horizontal.index])
+
+            call._update(arguments=arguments)
+
+            # pass driver_vars to successors
+            if item:
+                update_successor_driver_vars(call, item.trafo_data[key]['driver_vars'], successors, key)
 
     variables = routine.variables
     arguments = routine.arguments
 
-    relevant_local_arrays = []
+    # Filter out variables that we will pass down the call tree
+    calls = FindNodes(ir.CallStatement).visit(routine.body)
+    call_args = [arg for call in calls for arg in call.arguments]
 
+    relevant_local_arrays = []
     var_map = {}
     for var in variables:
-        if var in arguments:
-            if isinstance(var, sym.Scalar) and var.name != block_dim.size and var not in derived_type_variables:
-                var_map[var] = var.clone(type=var.type.clone(value=True))
-            elif isinstance(var, sym.Array):
-                dimensions = list(var.dimensions) + [routine.variable_map[block_dim.size]]
-                shape = list(var.shape) + [routine.variable_map[block_dim.size]]
-                vtype = var.type.clone(shape=as_tuple(shape))
-                var_map[var] = var.clone(dimensions=as_tuple(dimensions), type=vtype)
-                if decl_map[var].dimensions and block_dim.size.lower() not in \
-                                                [d.name.lower() for d in decl_map[var].dimensions]:
-                    dimensions = decl_map[var].dimensions + as_tuple(routine.variable_map[block_dim.size])
-                    decl_map[var]._update(dimensions=dimensions)
+        if isinstance(var, sym.Scalar) and var.name != block_dim.size and var not in derived_type_variables and \
+        str(var.type.intent).lower() == 'in' and var in arguments:
+            var_map[var] = var.clone(type=var.type.clone(value=True))
+        elif var.name.lower() in getattr(item, 'trafo_data', {}).get(key, {}).get('driver_vars', set()) or \
+        (not item and var.name in arguments):
+            dimensions = list(var.dimensions)
+            shape = list(var.shape)
+            if depth == 1:
+                dimensions += [routine.variable_map[block_dim.size]]
+                shape += [routine.variable_map[block_dim.size]]
+
+            vtype = var.type.clone(shape=as_tuple(shape))
+            var_map[var] = var.clone(dimensions=as_tuple(dimensions), type=vtype)
+            if decl_map[var].dimensions and block_dim.size.lower() not in \
+                                            [d.name.lower() for d in decl_map[var].dimensions]:
+                dimensions = decl_map[var].dimensions
+                if depth == 1:
+                    dimensions += as_tuple(routine.variable_map[block_dim.size])
+                decl_map[var]._update(dimensions=dimensions)
         else:
             if isinstance(var, sym.Array):
                 dimensions = list(var.dimensions)
@@ -272,29 +318,34 @@ def kernel_cuf(routine, horizontal, vertical, block_dim, transformation_type,
                         var_map[var] = var.clone(dimensions=as_tuple(dimensions), type=vtype)
                     else:
                         dimensions.remove(horizontal.size)
-                        relevant_local_arrays.append(var.name)
-                        vtype = var.type.clone(device=True)
-                        var_map[var] = var.clone(dimensions=as_tuple(dimensions), type=vtype)
                         if decl_map[var].dimensions:
                             if any(s in decl_map[var].dimensions for s in horizontal.size_expressions):
                                 dimensions = decl_map[var].dimensions[1:]
                                 decl_map[var]._update(dimensions=dimensions)
+
+                        relevant_local_arrays.append(var.name)
+                        vtype = var.type.clone(device=True)
+                        var_map[var] = var.clone(dimensions=as_tuple(dimensions), type=vtype)
 
     routine.spec = SubstituteExpressions(var_map).visit(routine.spec)
 
     var_map = {}
     arguments_name = [var.name for var in arguments]
     for var in FindVariables().visit(routine.body):
-        if var.name in arguments_name:
+        if var.name.lower() in item.trafo_data[key]['driver_vars']:
             if isinstance(var, sym.Array):
                 dimensions = list(var.dimensions)
-                dimensions.append(routine.variable_map[block_dim.index])
+                if depth == 1:
+                    dimensions.append(routine.variable_map[block_dim.index])
                 var_map[var] = var.clone(dimensions=as_tuple(dimensions),
                                          type=var.type.clone(shape=as_tuple(dimensions)))
         else:
             if transformation_type == 'hoist':
                 if var.name in relevant_local_arrays:
-                    var_map[var] = var.clone(dimensions=var.dimensions + (routine.variable_map[block_dim.index],))
+                    dimensions = var.dimensions
+                    if depth == 1:
+                        dimensions += as_tuple(routine.variable_map[block_dim.index])
+                    var_map[var] = var.clone(dimensions=dimensions)
             else:
                 if var.name in relevant_local_arrays:
                     dimensions = list(var.dimensions)
@@ -306,14 +357,40 @@ def kernel_cuf(routine, horizontal, vertical, block_dim, transformation_type,
         if call.name not in as_tuple(targets):
             continue
 
-        if not is_elemental(call.routine):
+        if not (is_elemental(call.routine) or SCCBaseTransformation.check_routine_pragmas(call.routine, None)):
             arguments = []
             for arg in call.arguments:
                 if isinstance(arg, sym.Array):
                     arguments.append(arg.clone(dimensions=None))
                 else:
                     arguments.append(arg)
+
+            if depth == 1:
+                vmap = {}
+                for arg in arguments:
+                    if not isinstance(arg, sym._Literal):
+                        if routine.variable_map[arg.name] in routine.arguments and isinstance(routine.variable_map[arg.name], sym.Array):
+                            dims = as_tuple(sym.IntrinsicLiteral(':') for d in routine.variable_map[arg.name].dimensions[:-1])
+                            dims += as_tuple(routine.variable_map[block_dim.index])
+
+                            vmap[arg] = arg.clone(dimensions=dims)
+
+                arguments = SubstituteExpressions(vmap).visit(arguments)
+
             call._update(arguments=as_tuple(arguments))
+
+    with pragmas_attached(routine, ir.CallStatement):
+        for call in FindNodes(ir.CallStatement).visit(routine.body):
+            if call.pragma:
+                pragma = call.pragma[0]
+                if pragma.keyword.lower() == 'loki' and 'inline' in pragma.content.lower():
+                    vmap = {}
+                    for arg in call.arguments:
+                        if arg in routine.arguments and isinstance(arg, sym.Array):
+                           dims = as_tuple(routine.variable_map[horizontal.index])
+                           vmap[arg] = arg.clone(dimensions=dims)
+                    arguments = SubstituteExpressions(vmap).visit(call.arguments)
+                    call._update(arguments=as_tuple(arguments))
 
 
 def kernel_demote_private_locals(routine, horizontal, vertical):
@@ -382,7 +459,7 @@ def kernel_demote_private_locals(routine, horizontal, vertical):
     routine.spec = SubstituteExpressions(vmap).visit(routine.spec)
 
 
-def driver_device_variables(routine, targets=None, data_offload=False):
+def driver_device_variables(routine, key, successors, targets=None, data_offload=False, item=None):
     """
     Driver device variable versions including
 
@@ -478,6 +555,8 @@ def driver_device_variables(routine, targets=None, data_offload=False):
             routine.body.append(ir.Deallocation((array.clone(name=f"{array.name}_d", dimensions=None),)))
 
     call_map = {}
+    if item:
+        item.trafo_data = {key: {'driver_vars': set()}}
     for call in calls:
         arguments = []
         for arg in call.arguments:
@@ -487,8 +566,16 @@ def driver_device_variables(routine, targets=None, data_offload=False):
                     arguments.append(arg.clone(name=f"{arg.name}_d", type=vtype, dimensions=None))
                 else:
                     arguments.append(arg.clone(dimensions=None))
+
             else:
                 arguments.append(arg)
+
+        if item:
+            # build set of arrays passed down via driver
+            for rarg, carg in call.arg_iter():
+                if isinstance(rarg, sym.Array):
+                    item.trafo_data[key]['driver_vars'].add(carg.name.lower())
+            update_successor_driver_vars(call, item.trafo_data[key]['driver_vars'], successors, key)
         call_map[call] = call.clone(arguments=as_tuple(arguments))
     routine.body = Transformer(call_map).visit(routine.body)
 
@@ -560,7 +647,7 @@ def driver_launch_configuration(routine, block_dim, targets=None):
                                                                                         sym.Cast(name="REAL",
                                                                                                  expression=step)))))
                 griddim_assignment = ir.Assignment(lhs=lhs, rhs=rhs)
-                mapper[loop] = as_tuple(blockdim_assignment) + as_tuple(griddim_assignment) + mapper[loop]
+                mapper[loop] = as_tuple(griddim_assignment) + as_tuple(blockdim_assignment) + mapper[loop]
 
     routine.body = Transformer(mapper=mapper).visit(routine.body)
 
@@ -672,8 +759,10 @@ class SccCufTransformation(Transformation):
 
     """
 
+    _key = 'SccCufTransformation'
+
     def __init__(self, horizontal, vertical, block_dim, transformation_type='parametrise',
-                 derived_types=None, data_offload=True):
+                 derived_types=None, data_offload=True, key=None):
         self.horizontal = horizontal
         self.vertical = vertical
         self.block_dim = block_dim
@@ -693,6 +782,9 @@ class SccCufTransformation(Transformation):
             self.derived_types = [_.upper() for _ in derived_types]
         self.derived_type_variables = ()
         self.data_offload = data_offload
+
+        if key:
+            self._key = key
 
     def transform_module(self, module, **kwargs):
 
@@ -718,16 +810,17 @@ class SccCufTransformation(Transformation):
         remove_pragmas(routine)
         single_variable_declaration(routine=routine, group_by_shape=True)
         device_subroutine_prefix(routine, depth)
+        successors = kwargs.get('successors', ())
 
         if depth > 0:
             routine.spec.prepend(ir.Import(module="cudafor"))
 
         if role == 'driver':
-            self.process_routine_driver(routine, targets=targets)
+            self.process_routine_driver(routine, targets=targets, item=item, successors=successors)
         if role == 'kernel':
-            self.process_routine_kernel(routine, depth=depth, targets=targets)
+            self.process_routine_kernel(routine, depth=depth, targets=targets, item=item, successors=successors)
 
-    def process_routine_kernel(self, routine, depth=1, targets=None):
+    def process_routine_kernel(self, routine, successors, depth=1, targets=None, item=None):
         """
         Kernel/Device subroutine specific changes/transformations.
 
@@ -748,14 +841,15 @@ class SccCufTransformation(Transformation):
         kernel_cuf(
             routine, self.horizontal, self.vertical, self.block_dim,
             self.transformation_type, depth=depth,
-            derived_type_variables=self.derived_type_variables, targets=targets
+            derived_type_variables=self.derived_type_variables, targets=targets, item=item, key=self._key,
+            successors=successors
         )
 
         # dynamic memory allocation of local arrays (only for version with dynamic memory allocation on device)
         if self.transformation_type == 'dynamic':
             dynamic_local_arrays(routine, self.vertical)
 
-    def process_routine_driver(self, routine, targets=None):
+    def process_routine_driver(self, routine, successors, targets=None, item=None):
         """
         Driver subroutine specific changes/transformations.
 
@@ -769,7 +863,8 @@ class SccCufTransformation(Transformation):
             routine=routine, derived_types=self.derived_types, targets=targets
         )
         # create variables needed for the device execution, especially generate device versions of arrays
-        driver_device_variables(routine=routine, targets=targets, data_offload=self.data_offload)
+        driver_device_variables(routine=routine, targets=targets, data_offload=self.data_offload, item=item,
+                                key=self._key, successors=successors)
         # remove block loop and generate launch configuration for CUF kernels
         driver_launch_configuration(routine=routine, block_dim=self.block_dim, targets=targets)
 
