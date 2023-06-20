@@ -424,7 +424,8 @@ class TemporariesPoolAllocatorTransformation(Transformation):
         stack_size = InlineCall(function=Variable(name='MAX'), parameters=as_tuple(stack_sizes), kw_parameters=())
         return stack_size
 
-    def _get_c_sizeof_arg(self, arr):
+    @staticmethod
+    def _get_c_sizeof_arg(arr):
         """
         Return an inline declaration of an intrinsic type, to be used as an argument to
         `C_SIZEOF`.
