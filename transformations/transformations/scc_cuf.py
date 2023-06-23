@@ -298,10 +298,10 @@ def kernel_cuf(routine, horizontal, vertical, block_dim, transformation_type,
                 dimensions += [routine.variable_map[block_dim.size]]
                 shape += [routine.variable_map[block_dim.size]]
 
-            vtype = var.type.clone(shape=as_tuple(shape))
+            vtype = var.type.clone(shape=as_tuple(shape), device=True)
             var_map[var] = var.clone(dimensions=as_tuple(dimensions), type=vtype)
             if decl_map[var].dimensions and block_dim.size.lower() not in \
-                                            [d.name.lower() for d in decl_map[var].dimensions]:
+                                            [str(d).lower() for d in decl_map[var].dimensions]:
                 dimensions = decl_map[var].dimensions
                 if depth == 1:
                     dimensions += as_tuple(routine.variable_map[block_dim.size])
