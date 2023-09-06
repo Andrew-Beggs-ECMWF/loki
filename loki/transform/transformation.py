@@ -8,13 +8,15 @@
 """
 Base class definition for :ref:`transformations`.
 """
+from abc import ABC
+
 from loki.module import Module
 from loki.sourcefile import Sourcefile
 from loki.subroutine import Subroutine
 from loki.bulk.item import SubroutineItem
 
 
-__all__ = ['Transformation']
+__all__ = ['Transformation', 'TransformationChain']
 
 
 class Transformation:
@@ -347,3 +349,38 @@ class Transformation:
         # Ensure all objects in the IR are in the module's scope.
         if rescope_symbols:
             module.rescope_symbols()
+
+
+class TransformationChain(ABC):
+    """
+    Abstract base class for the composition of :any:`Transformation`
+    classes via inheritance.
+
+
+    """
+
+    @classmethod
+    def get_transformation_subclasses(cls):
+        """
+        Returns a list of :any:`Transformation` subclasses from which
+        this :any:`TransformationChain` is composed.
+        """
+        return tuple(c for c in cls.mro() if Transformation in c.mro()[1:] and not c == cls)
+
+    def transform_subroutine(self, routine, **kwargs):
+        """
+        """
+        for TrafoType in self.get_transformation_subclasses():
+            TrafoType.transform_subroutine(self, routine, **kwargs)
+
+    def transform_module(self, module, **kwargs):
+        """
+        """
+        for TrafoType in self.get_transformation_subclasses():
+            TrafoType.transform_module(self, module, **kwargs)
+
+    def transform_file(self, sourcefile, **kwargs):
+        """
+        """
+        for TrafoType in self.get_transformation_subclasses():
+            TrafoType.transform_file(self, sourcefile, **kwargs)
