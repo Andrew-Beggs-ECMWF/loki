@@ -8,7 +8,7 @@ from loki import (
     SubroutineItem, Comment
 )
 from loki.transform import (
-    Transformation, replace_selected_kind,  FileWriteTransformation
+    Transformation, replace_selected_kind,  FileWriteTransformation, TransformationChain
 )
 
 
@@ -446,3 +446,76 @@ end subroutine rick
     # Check error behaviour if no item provided
     with pytest.raises(ValueError):
         FileWriteTransformation(builddir=here).apply(source=source)
+
+
+@pytest.mark.parametrize('frontend', available_frontends())
+def test_transformation_chain(frontend):
+    """
+    Test for composition of :any:`Transfomation` classes via :any:`TransformationChain`.
+    """
+
+    class PrefixTransformation(Transformation):
+
+        recurse_to_subroutines = True
+
+        def transform_module(self, module, **kwargs):
+            module.name = 'Never_' + module.name
+
+        def transform_subroutine(self, routine, **kwargs):
+            routine.name = 'Never_' + routine.name
+
+    class PostfixTransformation(Transformation):
+
+        recurse_to_subroutines = True
+        
+        def __init__(self, module_postfix=None, routine_postfix=None):
+            self.module_postfix = module_postfix
+            self.routine_postfix = routine_postfix
+
+        def transform_module(self, module, **kwargs):
+            module.name += self.module_postfix or '_give_you_up'
+
+        def transform_subroutine(self, routine, **kwargs):
+            routine.name += self.routine_postfix or '_let_you_down'
+
+    class RickRollTransformation(
+            TransformationChain,
+            # Compose transformations into a chain:
+            PrefixTransformation,
+            PostfixTransformation
+    ):
+        pass
+
+    subtrafos = RickRollTransformation.get_transformation_subclasses()
+    assert subtrafos == (PrefixTransformation, PostfixTransformation)
+
+    fcode = """
+module going_to
+  implicit none
+contains
+  subroutine gonna(a)
+    integer, intent(inout) :: a
+    a = a + 1
+  end subroutine gonna
+end module going_to
+    """.strip()
+
+    module = Module.from_source(fcode, frontend=frontend)
+    assert module.name == 'going_to'
+    assert module.routines[0].name == 'gonna'
+
+    # Apply unparameterised compound transformation
+    module.apply(RickRollTransformation())
+    assert module.name == 'Never_going_to_give_you_up'
+    assert module.routines[0].name == 'Never_gonna_let_you_down'
+
+    module = Module.from_source(fcode, frontend=frontend)
+    assert module.name == 'going_to'
+    assert module.routines[0].name == 'gonna'
+
+    # Apply parameterised compound transformation
+    module.apply(RickRollTransformation(
+        module_postfix='_turn_around', routine_postfix='_desert_you'
+    ))
+    assert module.name == 'Never_going_to_turn_around'
+    assert module.routines[0].name == 'Never_gonna_desert_you'
