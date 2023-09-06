@@ -599,7 +599,7 @@ class Scheduler:
                 successors += [self.item_map[child.name]] + self.item_successors(child)
         return successors
 
-    def process(self, transformation, reverse=False, item_filter=SubroutineItem, use_file_graph=False):
+    def process(self, transformation, item_filter=SubroutineItem, use_file_graph=False):
         """
         Process all :attr:`items` in the scheduler's graph
 
@@ -629,7 +629,7 @@ class Scheduler:
                 graph = self.item_graph
 
             traversal = nx.topological_sort(graph)
-            if reverse:
+            if transformation.reverse_traversal:
                 traversal = reversed(list(traversal))
 
             if use_file_graph:

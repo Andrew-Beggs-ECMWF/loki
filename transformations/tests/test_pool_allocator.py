@@ -217,7 +217,7 @@ end module kernel_mod
     transformation = TemporariesPoolAllocatorTransformation(
         block_dim=block_dim, check_bounds=check_bounds
     )
-    scheduler.process(transformation=transformation, reverse=True)
+    scheduler.process(transformation=transformation)
     kernel_item = scheduler['kernel_mod#kernel']
 
     assert transformation._key in kernel_item.trafo_data
@@ -501,7 +501,7 @@ end module kernel_mod
             normalize_range_indexing(item.routine)
 
     transformation = TemporariesPoolAllocatorTransformation(block_dim=block_dim, directive=directive, key='some_key')
-    scheduler.process(transformation=transformation, reverse=True)
+    scheduler.process(transformation=transformation)
     kernel_item = scheduler['kernel_mod#kernel']
     kernel2_item = scheduler['kernel_mod#kernel2']
 
@@ -778,7 +778,7 @@ end module kernel_mod
             normalize_range_indexing(item.routine)
 
     transformation = TemporariesPoolAllocatorTransformation(block_dim=block_dim, directive=directive)
-    scheduler.process(transformation=transformation, reverse=True)
+    scheduler.process(transformation=transformation)
     kernel_item = scheduler['kernel_mod#kernel']
     kernel2_item = scheduler['kernel_mod#kernel2']
 
@@ -997,7 +997,7 @@ def test_pool_allocator_more_call_checks(frontend, block_dim, caplog):
             normalize_range_indexing(item.routine)
 
     transformation = TemporariesPoolAllocatorTransformation(block_dim=block_dim)
-    scheduler.process(transformation=transformation, reverse=True)
+    scheduler.process(transformation=transformation)
     item = scheduler['kernel_mod#kernel']
     kernel = item.routine
 

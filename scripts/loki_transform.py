@@ -220,7 +220,7 @@ def convert(
 
     if global_var_offload:
         scheduler.process(transformation=GlobalVarOffloadTransformation(),
-                          item_filter=(SubroutineItem, GlobalVarImportItem), reverse=True)
+                          item_filter=(SubroutineItem, GlobalVarImportItem))
 
     if mode in ['idem-stack', 'scc-stack']:
         if frontend == Frontend.OMNI:
@@ -236,10 +236,9 @@ def convert(
         vertical = scheduler.config.dimensions['vertical']
         block_dim = scheduler.config.dimensions['block_dim']
         directive = {'idem-stack': 'openmp', 'scc-stack': 'openacc'}[mode]
-        transformation = TemporariesPoolAllocatorTransformation(
+        scheduler.process(transformation=TemporariesPoolAllocatorTransformation(
             block_dim=block_dim, directive=directive, check_bounds='scc' not in mode
-        )
-        scheduler.process(transformation=transformation, reverse=True)
+        ))
     if mode == 'cuf-parametrise':
         dic2p = scheduler.config.dic2p
         disable = scheduler.config.disable
@@ -248,8 +247,7 @@ def convert(
     if mode == "cuf-hoist":
         disable = scheduler.config.disable
         vertical = scheduler.config.dimensions['vertical']
-        scheduler.process(transformation=HoistTemporaryArraysAnalysis(disable=disable, dim_vars=(vertical.size,)),
-                          reverse=True)
+        scheduler.process(transformation=HoistTemporaryArraysAnalysis(disable=disable, dim_vars=(vertical.size,)))
         scheduler.process(transformation=HoistTemporaryArraysDeviceAllocatableTransformation(disable=disable))
 
     # Housekeeping: Inject our re-named kernel and auto-wrapped it in a module

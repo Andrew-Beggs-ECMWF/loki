@@ -132,7 +132,7 @@ def test_hoist(here, frontend, config):
     compile_and_test(scheduler=scheduler, here=here, frontend=frontend, a=(5, 10, 100), test_name="source")
 
     # Transformation: Analysis
-    scheduler.process(transformation=HoistVariablesAnalysis(), reverse=True)
+    scheduler.process(transformation=HoistVariablesAnalysis())
     # Transformation: Synthesis
     scheduler.process(transformation=HoistVariablesTransformation())
 
@@ -171,7 +171,7 @@ def test_hoist_disable(here, frontend, config):
     disable = ("device1", "device2")
 
     # Transformation: Analysis
-    scheduler.process(transformation=HoistVariablesAnalysis(disable=disable), reverse=True)
+    scheduler.process(transformation=HoistVariablesAnalysis(disable=disable))
     # Transformation: Synthesis
     scheduler.process(transformation=HoistVariablesTransformation(disable=disable))
 
@@ -207,7 +207,7 @@ def test_hoist_arrays(here, frontend, config):
     scheduler = Scheduler(paths=[proj], config=config, seed_routines=['driver', 'another_driver'], frontend=frontend)
 
     # Transformation: Analysis
-    scheduler.process(transformation=HoistTemporaryArraysAnalysis(), reverse=True)
+    scheduler.process(transformation=HoistTemporaryArraysAnalysis())
     # Transformation: Synthesis
     scheduler.process(transformation=HoistVariablesTransformation())
 
@@ -243,7 +243,7 @@ def test_hoist_specific_variables(here, frontend, config):
     scheduler = Scheduler(paths=[proj], config=config, seed_routines=['driver', 'another_driver'], frontend=frontend)
 
     # Transformation: Analysis
-    scheduler.process(transformation=HoistTemporaryArraysAnalysis(dim_vars=('a', 'a1', 'a2')), reverse=True)
+    scheduler.process(transformation=HoistTemporaryArraysAnalysis(dim_vars=('a', 'a1', 'a2')))
     # Transformation: Synthesis
     scheduler.process(transformation=HoistVariablesTransformation())
 
@@ -296,7 +296,7 @@ def test_hoist_allocatable(here, frontend, config):
 
     key = "HoistVariablesAllocatable"
     # Transformation: Analysis
-    scheduler.process(transformation=HoistTemporaryArraysAnalysis(dim_vars=('a', 'a1', 'a2'), key=key), reverse=True)
+    scheduler.process(transformation=HoistTemporaryArraysAnalysis(dim_vars=('a', 'a1', 'a2'), key=key))
     # Transformation: Synthesis
     scheduler.process(transformation=HoistTemporaryArraysTransformationAllocatable(key=key))
 
@@ -404,7 +404,7 @@ end module kernel_mod
         for item in scheduler.items:
             normalize_range_indexing(item.routine)
 
-    scheduler.process(transformation=HoistTemporaryArraysAnalysis(dim_vars=('klev',)), reverse=True)
+    scheduler.process(transformation=HoistTemporaryArraysAnalysis(dim_vars=('klev',)))
     scheduler.process(transformation=HoistTemporaryArraysTransformationAllocatable())
 
     driver_variables = (
