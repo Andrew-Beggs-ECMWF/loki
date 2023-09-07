@@ -60,7 +60,8 @@ from loki import (
     fexprgen, Transformation, BasicType, CMakePlanner, Subroutine,
     SubroutineItem, ProcedureBindingItem, gettempdir, ProcedureSymbol,
     ProcedureType, DerivedType, TypeDef, Scalar, Array, FindInlineCalls,
-    Import, Variable, GenericImportItem, GlobalVarImportItem, flatten
+    Import, Variable, GenericImportItem, GlobalVarImportItem, flatten,
+    TransformationChain
 )
 
 
@@ -466,6 +467,96 @@ def test_scheduler_process_filter(here, config, frontend):
     kernele_source =  scheduler.item_map['kernele_mod#kernele'].source
     assert kernele_source.all_subroutines[0].name == 'kernelE_X'
     assert kernele_source.all_subroutines[1].name == 'kernelET'
+
+
+@pytest.mark.skipif(not graphviz_present(), reason='Graphviz is not installed')
+def test_scheduler_process_chain(here, config, frontend):
+    """
+    Applies a simple transformation chain over a set of driver/kernel routines.
+
+    projA: driverA -> kernelA -> compute_l1 -> compute_l2
+                           |
+                           | --> another_l1 -> another_l2
+    """
+    projA = here/'sources/projA'
+
+    config['routine'] = [
+        {'name': 'driverA', 'role': 'driver', 'expand': True,},
+    ]
+
+    class CountDown(Transformation):
+        """
+        Append an ever decreasing number to subroutine names.
+        """
+
+        # Force the traversal from the leaf nodes upwards
+        reverse_traversal = True
+
+        def __init__(self, start=10, **kwargs):
+            self.count_down = start
+            super().__init__(**kwargs)
+
+        def transform_subroutine(self, routine, **kwargs):
+            self.count_down -= 1
+            routine.name += f'_{self.count_down}'
+
+    class CountUp(Transformation):
+        """
+        Append an ever increasing number to subroutine names.
+        """
+
+        # Force forward traversal from driver downwards
+        reverse_traversal = False
+
+        def __init__(self, **kwargs):
+            self.count_up = 0
+            super().__init__(**kwargs)
+
+        def transform_subroutine(self, routine, **kwargs):
+            self.count_up += 1
+            routine.name += f'_{self.count_up}'
+
+    class XCounter(TransformationChain, CountDown, CountUp):
+        """
+        Combined transformation chain that applies both changes.
+
+        Importantly, one transformation needs reverse order, while the
+        other does not.
+        """
+
+    # Apply the forward counting pass
+    scheduler = Scheduler([projA], includes=projA/'include', config=config, frontend=frontend)
+    scheduler.process(transformation=CountUp())
+    assert scheduler.item_map['drivera_mod#drivera'].routine.name == 'driverA_1'
+    assert scheduler.item_map['kernela_mod#kernela'].routine.name == 'KERNELA_2'
+    assert scheduler.item_map['compute_l1_mod#compute_l1'].routine.name == 'compute_l1_3'
+    assert scheduler.item_map['#another_l1'].routine.name == 'another_l1_4'
+    assert scheduler.item_map['compute_l2_mod#compute_l2'].routine.name == 'compute_l2_5'
+    assert scheduler.item_map['#another_l2'].routine.name == 'another_l2_6'
+
+    # Apply the backward counting pass
+    scheduler = Scheduler([projA], includes=projA/'include', config=config, frontend=frontend)
+    scheduler.process(transformation=CountDown(start=7))
+    assert scheduler.item_map['drivera_mod#drivera'].routine.name == 'driverA_1'
+    assert scheduler.item_map['kernela_mod#kernela'].routine.name == 'KERNELA_2'
+    assert scheduler.item_map['compute_l1_mod#compute_l1'].routine.name == 'compute_l1_3'
+    assert scheduler.item_map['#another_l1'].routine.name == 'another_l1_4'
+    assert scheduler.item_map['compute_l2_mod#compute_l2'].routine.name == 'compute_l2_5'
+    assert scheduler.item_map['#another_l2'].routine.name == 'another_l2_6'
+
+    # Apply the combined transformation chain and check result
+    scheduler = Scheduler([projA], includes=projA/'include', config=config, frontend=frontend)
+    scheduler.process(transformation=XCounter(start=7))
+
+    # Check that the targeted subroutines have been renamed correctly.
+    # We want the up counter to go forward, starting with 1 at the driver,
+    # and the down counter to go backward from 6, so that both numbers match.
+    assert scheduler.item_map['drivera_mod#drivera'].routine.name == 'driverA_1_1'
+    assert scheduler.item_map['kernela_mod#kernela'].routine.name == 'KERNELA_2_2'
+    assert scheduler.item_map['compute_l1_mod#compute_l1'].routine.name == 'compute_l1_3_3'
+    assert scheduler.item_map['#another_l1'].routine.name == 'another_l1_4_4'
+    assert scheduler.item_map['compute_l2_mod#compute_l2'].routine.name == 'compute_l2_5_5'
+    assert scheduler.item_map['#another_l2'].routine.name == 'another_l2_6_6'
 
 
 @pytest.mark.skipif(not graphviz_present(), reason='Graphviz is not installed')
