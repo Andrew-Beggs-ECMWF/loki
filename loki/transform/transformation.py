@@ -367,20 +367,29 @@ class TransformationChain(ABC):
         """
         return tuple(c for c in cls.mro() if Transformation in c.mro()[1:] and not c == cls)
 
-    def transform_subroutine(self, routine, **kwargs):
+    def transform_subroutine(self, routine, TrafoType=None, **kwargs):
         """
         """
-        for TrafoType in self.get_transformation_subclasses():
+        if TrafoType:
             TrafoType.transform_subroutine(self, routine, **kwargs)
+        else:
+            for TrafoType in self.get_transformation_subclasses():
+                TrafoType.transform_subroutine(self, routine, **kwargs)
 
-    def transform_module(self, module, **kwargs):
+    def transform_module(self, module, TrafoType=None, **kwargs):
         """
         """
-        for TrafoType in self.get_transformation_subclasses():
+        if TrafoType:
             TrafoType.transform_module(self, module, **kwargs)
+        else:
+            for TrafoType in self.get_transformation_subclasses():
+                TrafoType.transform_module(self, module, **kwargs)
 
-    def transform_file(self, sourcefile, **kwargs):
+    def transform_file(self, sourcefile, TrafoType=None, **kwargs):
         """
         """
-        for TrafoType in self.get_transformation_subclasses():
+        if TrafoType:
             TrafoType.transform_file(self, sourcefile, **kwargs)
+        else:
+            for TrafoType in self.get_transformation_subclasses():
+                TrafoType.transform_file(self, sourcefile, **kwargs)

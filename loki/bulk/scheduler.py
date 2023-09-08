@@ -599,7 +599,7 @@ class Scheduler:
                 successors += [self.item_map[child.name]] + self.item_successors(child)
         return successors
 
-    def process(self, transformation):
+    def _traverse_item_graph(self, transformation, TrafoType=None):
         """
         Process all :attr:`items` in the scheduler's graph
 
@@ -611,15 +611,9 @@ class Scheduler:
         The scheduler applies the transformation to the IR node corresponding to
         each item in the scheduler's graph. For example, for a :any:`SubroutineItem`,
         the transformation is applied to the corresponding :any:`Subroutine` object.
-
-        Optionally, the traversal can be performed on a source file level only,
-        by setting :data:`use_file_graph` to ``True``. This calls the
-        transformation on all :any:`Sourcefile` objects that contain at least one
-        object corresponding to an item in the scheduler graph. If combined with
-        a :data:`item_filter`, only source files with at least one object corresponding
-        to an item of that type are processed.
         """
-        trafo_name = transformation.__class__.__name__
+
+        trafo_name = TrafoType.__name__ if TrafoType else transformation.__class__.__name__
         log = f'[Loki::Scheduler] Applied transformation <{trafo_name}>' + ' in {:.2f}s'
         with Timer(logger=info, text=log):
 
@@ -628,8 +622,9 @@ class Scheduler:
             item_filter = as_tuple(transformation.item_filter)
 
             # Construct the actual graph to traverse
+            reverse = TrafoType.reverse_traversal if TrafoType else transformation.reverse_traversal
             traversal = nx.topological_sort(graph)
-            if transformation.reverse_traversal:
+            if reverse:
                 traversal = reversed(list(traversal))
 
             if transformation.traverse_file_graph:
@@ -663,10 +658,33 @@ class Scheduler:
 
                     # Process work item with appropriate kernel
                     transformation.apply(
-                        source, role=_item.role, mode=_item.mode,
+                        source, TrafoType=TrafoType, role=_item.role, mode=_item.mode,
                         item=_item, targets=_item.targets,
                         successors=self.item_successors(_item), depths=self.depths
                     )
+
+    def process(self, transformation):
+        """
+        Process all :attr:`items` in the scheduler's graph
+
+        By default, the traversal is performed in topological order, which
+        ensures that :any:`CallStatement` objects are always processed before
+        their target :any:`Subroutine`.
+        This order can be reversed by setting :data:`reverse` to ``True``.
+
+        The scheduler applies the transformation to the IR node corresponding to
+        each item in the scheduler's graph. For example, for a :any:`SubroutineItem`,
+        the transformation is applied to the corresponding :any:`Subroutine` object.
+        """
+
+        from loki.transform.transformation import TransformationChain
+
+        if isinstance(transformation, TransformationChain):
+            for TrafoType in transformation.get_transformation_subclasses():
+                self._traverse_item_graph(transformation, TrafoType=TrafoType)
+
+        else:
+            self._traverse_item_graph(transformation, TrafoType=None)
 
     def callgraph(self, path, with_file_graph=False):
         """
