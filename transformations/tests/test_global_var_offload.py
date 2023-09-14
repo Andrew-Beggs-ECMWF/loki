@@ -50,8 +50,7 @@ def test_transformation_global_var_import(here, config, frontend):
     ]
 
     scheduler = Scheduler(paths=here/'sources/projGlobalVarImports', config=my_config, frontend=frontend)
-    scheduler.process(transformation=GlobalVarOffloadTransformation(),
-                      item_filter=(SubroutineItem, GlobalVarImportItem))
+    scheduler.process(transformation=GlobalVarOffloadTransformation())
 
     item_map = {item.name: item for item in scheduler.items}
     driver_item = item_map['#driver']

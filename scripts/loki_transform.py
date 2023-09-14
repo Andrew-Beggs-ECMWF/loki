@@ -219,8 +219,7 @@ def convert(
         raise RuntimeError('[Loki] Convert could not find specified Transformation!')
 
     if global_var_offload:
-        scheduler.process(transformation=GlobalVarOffloadTransformation(),
-                          item_filter=(SubroutineItem, GlobalVarImportItem))
+        scheduler.process(transformation=GlobalVarOffloadTransformation())
 
     if mode in ['idem-stack', 'scc-stack']:
         if frontend == Frontend.OMNI:
@@ -257,14 +256,10 @@ def convert(
     scheduler.process(transformation=dependency)
 
     # Write out all modified source files into the build directory
-    if global_var_offload:
-        item_filter = (SubroutineItem, GlobalVarImportItem)
-    else:
-        item_filter = SubroutineItem
-    scheduler.process(
-        transformation=FileWriteTransformation(builddir=build, mode=mode, cuf='cuf' in mode),
-        item_filter=item_filter
-    )
+    scheduler.process(transformation=FileWriteTransformation(
+        builddir=build, mode=mode, cuf='cuf' in mode,
+        include_module_var_imports=global_var_offload
+    ))
 
 
 @cli.command()

@@ -290,6 +290,10 @@ class GlobalVarOffloadTransformation(Transformation):
     # Traverse call tree in reverse when using Scheduler
     reverse_traversal = True
 
+    # Include module variable imports in the underlying graph
+    # connectivity for traversal with the Scheduler
+    item_filter = (SubroutineItem, GlobalVarImportItem)
+
     def __init__(self, key=None):
         if key:
             self._key = key
