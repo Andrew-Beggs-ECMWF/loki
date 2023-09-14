@@ -254,7 +254,7 @@ def convert(
     mode = mode.replace('-', '_')  # Sanitize mode string
     dependency = DependencyTransformation(suffix=f'_{mode.upper()}',
                                           mode='module', module_suffix='_MOD')
-    scheduler.process(transformation=dependency, use_file_graph=True)
+    scheduler.process(transformation=dependency)
 
     # Write out all modified source files into the build directory
     if global_var_offload:
@@ -263,7 +263,7 @@ def convert(
         item_filter = SubroutineItem
     scheduler.process(
         transformation=FileWriteTransformation(builddir=build, mode=mode, cuf='cuf' in mode),
-        use_file_graph=True, item_filter=item_filter
+        item_filter=item_filter
     )
 
 

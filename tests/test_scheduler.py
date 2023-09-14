@@ -1418,6 +1418,8 @@ def test_scheduler_traversal_order(here, config, frontend, use_file_graph, rever
 
         reverse_traversal = reverse
 
+        traverse_file_graph = use_file_graph
+
         def __init__(self):
             self.record = []
 
@@ -1434,7 +1436,7 @@ def test_scheduler_traversal_order(here, config, frontend, use_file_graph, rever
             self.record += [kwargs['item'].name + '::' + routine.name]
 
     transformation = LoggingTransformation()
-    scheduler.process(transformation=transformation, use_file_graph=use_file_graph)
+    scheduler.process(transformation=transformation)
 
     if reverse:
         assert transformation.record == flatten(expected[::-1])
@@ -1482,6 +1484,8 @@ end module member_mod
 
         reverse_traversal = reverse
 
+        traverse_file_graph = use_file_graph
+
         def __init__(self):
             self.record = []
 
@@ -1498,7 +1502,7 @@ end module member_mod
             self.record += [kwargs['item'].name + '::' + routine.name]
 
     transformation = LoggingTransformation()
-    scheduler.process(transformation=transformation, use_file_graph=use_file_graph)
+    scheduler.process(transformation=transformation)
 
     if use_file_graph:
         expected = ['member_mod.F90']
