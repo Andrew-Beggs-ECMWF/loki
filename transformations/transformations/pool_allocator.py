@@ -148,7 +148,7 @@ class TemporariesPoolAllocatorTransformation(Transformation):
                 self.import_allocation_types(routine, item)
             self.create_pool_allocator(routine, stack_size)
 
-        self.inject_pool_allocator_into_calls(routine, targets)
+        self.inject_pool_allocator_into_calls(routine, targets, driver=role=='driver')
 
     @staticmethod
     def import_c_sizeof(routine):
@@ -305,7 +305,7 @@ class TemporariesPoolAllocatorTransformation(Transformation):
             stack_type_bytes = Cast(name='REAL', expression=Literal(1), kind=_kind)
             stack_type_bytes = InlineCall(Variable(name='C_SIZEOF'),
                                           parameters=as_tuple(stack_type_bytes))
-            stack_size_assign = Assignment(lhs=stack_size_var, rhs=Quotient(stack_size, stack_type_bytes))
+            stack_size_assign = Assignment(lhs=stack_size_var, rhs=stack_size) # Quotient(stack_size, stack_type_bytes))
             body_prepend += [stack_size_assign]
 
             # Stack-size no longer guaranteed to be a multiple of 8-bytes, so we have to check here
@@ -316,7 +316,7 @@ class TemporariesPoolAllocatorTransformation(Transformation):
                                  '==', Literal(0))), inline=True, body=(padding,),
                                  else_body=None
             )
-            body_prepend += [stack_size_check]
+            # body_prepend += [stack_size_check]
 
             variables_append += [stack_size_var]
 
@@ -330,7 +330,7 @@ class TemporariesPoolAllocatorTransformation(Transformation):
                 dtype=BasicType.REAL,
                 kind=Variable(name=self.stack_type_kind, scope=routine),
                 shape=(RangeIndex((None, None)), RangeIndex((None, None))),
-                allocatable=True,
+                allocatable=True, # contiguous=True,
             )
             stack_storage = Variable(
                 name=self.stack_storage_name, type=stack_type,
@@ -462,7 +462,7 @@ class TemporariesPoolAllocatorTransformation(Transformation):
 
         return param
 
-    def _create_stack_allocation(self, stack_ptr, stack_end, ptr_var, arr, stack_size):
+    def _create_stack_allocation(self, stack_ptr, stack_end, ptr_var, arr, stack_size, stack_storage):
         """
         Utility routine to "allocate" a temporary array on the pool allocator's "stack"
 
@@ -489,8 +489,18 @@ class TemporariesPoolAllocatorTransformation(Transformation):
             :any:`Conditional` that verifies that the stack is big enough
         """
 
-        ptr_assignment = Assignment(lhs=ptr_var, rhs=stack_ptr)
-
+        # ptr_assignment = Assignment(lhs=ptr_var, rhs=stack_ptr)
+        ptr_assignment = Assignment(lhs=ptr_var, rhs=InlineCall(
+                    function=Variable(name='LOC'),
+                    parameters=(
+                        stack_storage.clone(
+                            dimensions=(stack_ptr.clone(),)
+                        ),
+                    ),
+                    kw_parameters=None
+                )
+            )
+        
         # Build expression for array size in bytes
         dim = arr.dimensions[0]
         for d in arr.dimensions[1:]:
@@ -498,9 +508,9 @@ class TemporariesPoolAllocatorTransformation(Transformation):
                 dim = simplify(Product((dim, Sum((d.upper, Product((-1,d.lower)), IntLiteral(1))))))
             else:
                 dim = Product((dim, d))
-        arr_size = Product((dim, InlineCall(Variable(name='C_SIZEOF'),
-                                            parameters=as_tuple(self._get_c_sizeof_arg(arr)))))
-
+        # arr_size = Product((dim, InlineCall(Variable(name='C_SIZEOF'),
+        #                                     parameters=as_tuple(self._get_c_sizeof_arg(arr)))))
+        arr_size = dim
         # Increment stack size
         stack_size = simplify(Sum((stack_size, arr_size)))
 
@@ -559,7 +569,30 @@ class TemporariesPoolAllocatorTransformation(Transformation):
         stack_var_end = self._get_local_stack_var_end(routine) if self.check_bounds else None
         stack_arg = self._get_stack_arg(routine)
         stack_arg_end = self._get_stack_arg_end(routine) if self.check_bounds else None
+        ##
+        # _, stack_storage_var = self._get_stack_storage_and_size_var(routine)
+        # stack_storage_var_dim = stack_storage_var.dimensions
+        # stack_storage_var_dim[1] = routine.variable_map[self.block_dim.index]
+        # stack_storage_arg = stack_storage_var.clone(dimensions=stack_storage_var.dimensions)
+        # stack_type = SymbolAttributes(dtype=BasicType.INTEGER, intent='inout', kind=self.stack_int_type_kind)
+        # var_name = f'{self.stack_argument_name}_{self.stack_end_name}'
+        stack_type = SymbolAttributes(
+                dtype=BasicType.REAL,
+                kind=Variable(name=self.stack_type_kind, scope=routine),
+                shape=(RangeIndex((None, None)),), intent='inout', contiguous=True, # allocatable=True, contiguous=True,
+        )
+        stack_storage = Variable(
+                name=self.stack_storage_name, type=stack_type,
+                dimensions=stack_type.shape, scope=routine, 
+        )
+        arg_pos = [routine.arguments.index(arg) for arg in routine.arguments if arg.type.optional]
+        if arg_pos:
+            routine.arguments = routine.arguments[:arg_pos[0]] + (stack_storage,) + routine.arguments[arg_pos[0]:]
+        else:
+            routine.arguments += (stack_storage,)
+        ##
         allocations = [Assignment(lhs=stack_var, rhs=stack_arg)]
+        # allocations = [Assignment(lhs=stack_var, rhs=IntLiteral(1))]
         if self.check_bounds:
             allocations.append(Assignment(lhs=stack_var_end, rhs=stack_arg_end))
 
@@ -573,7 +606,7 @@ class TemporariesPoolAllocatorTransformation(Transformation):
         for arr in temporary_arrays:
             ptr_var = Variable(name=self.local_ptr_var_name_pattern.format(name=arr.name), scope=routine)
             declarations += [Intrinsic(f'POINTER({ptr_var.name}, {arr.name})')]  # pylint: disable=no-member
-            allocation, stack_size = self._create_stack_allocation(stack_ptr, stack_end, ptr_var, arr, stack_size)
+            allocation, stack_size = self._create_stack_allocation(stack_ptr, stack_end, ptr_var, arr, stack_size, stack_storage)
             allocations += allocation
 
             # Store type information of temporary allocation
@@ -664,17 +697,18 @@ class TemporariesPoolAllocatorTransformation(Transformation):
                 )
                 break
 
-            ptr_assignment = Assignment(
-                lhs=stack_ptr, rhs=InlineCall(
-                    function=Variable(name='LOC'),
-                    parameters=(
-                        stack_storage.clone(
-                            dimensions=(Literal(1), Variable(name=self.block_dim.index, scope=routine))
-                        ),
-                    ),
-                    kw_parameters=None
-                )
-            )
+            # ptr_assignment = Assignment(
+            #     lhs=stack_ptr, rhs=InlineCall(
+            #         function=Variable(name='LOC'),
+            #         parameters=(
+            #             stack_storage.clone(
+            #                 dimensions=(Literal(1), Variable(name=self.block_dim.index, scope=routine))
+            #             ),
+            #         ),
+            #         kw_parameters=None
+            #     )
+            # )
+            ptr_assignment = Assignment(lhs=stack_ptr, rhs=IntLiteral(1))
 
             # Retrieve kind parameter of stack storage
             _kind = (routine.imported_symbol_map.get(f'{self.stack_type_kind}', None) or
@@ -698,7 +732,7 @@ class TemporariesPoolAllocatorTransformation(Transformation):
         if loop_map:
             routine.body = Transformer(loop_map).visit(routine.body)
 
-    def inject_pool_allocator_into_calls(self, routine, targets):
+    def inject_pool_allocator_into_calls(self, routine, targets, driver=False):
         """
         Add the pool allocator argument into subroutine calls
         """
@@ -708,6 +742,14 @@ class TemporariesPoolAllocatorTransformation(Transformation):
         if self.check_bounds:
             stack_var_end = self._get_local_stack_var_end(routine)
             new_vars += (stack_var_end,)
+        # _, stack_storage_var = self._get_stack_storage_and_size_var(routine)
+        stack_storage_var = routine.variable_map[self.stack_storage_name]
+        if driver:
+            stack_storage_var_dim = list(stack_storage_var.dimensions)
+            stack_storage_var_dim[1] = routine.variable_map[self.block_dim.index]
+        else:
+            stack_storage_var_dim = None
+        new_vars += (stack_storage_var.clone(dimensions=as_tuple(stack_storage_var_dim)),)
         for call in FindNodes(CallStatement).visit(routine.body):
             if call.name in targets:
                # If call is declared via an explicit interface, the ProcedureSymbol corresponding to the call is the
