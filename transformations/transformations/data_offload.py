@@ -14,6 +14,7 @@ from loki import (
     Comment, flatten, DerivedType, get_pragma_parameters, CaseInsensitiveDict,
     FindInlineCalls, SubstituteExpressions
 )
+import pdb
 
 
 __all__ = [
@@ -273,6 +274,10 @@ class GlobalVariableAnalysis(Transformation):
             raise RuntimeError('Cannot apply GlobalVariableAnalysis without item to store analysis data')
         if 'successors' not in kwargs:
             raise RuntimeError('Cannot apply GlobalVariableAnalysis without successors to store offload analysis data')
+
+        role = kwargs['role']
+        if role == 'driver':
+            return
 
         item = kwargs['item']
         successors = kwargs['successors']

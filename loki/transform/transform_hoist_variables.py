@@ -79,7 +79,7 @@ are provided to create derived classes for specialisation of the actual hoisting
         scheduler.process(transformation=HoistTemporaryArraysAnalysis(dim_vars=('a',), key=key))
         scheduler.process(transformation=HoistTemporaryArraysTransformationAllocatable(key=key))
 """
-from loki.expression import FindVariables, SubstituteExpressions
+from loki.expression import SubstituteExpressions
 from loki.ir import (
     CallStatement, Allocation, Deallocation, Transformer, FindNodes
 )
@@ -87,7 +87,9 @@ from loki.tools.util import is_iterable, as_tuple, CaseInsensitiveDict
 from loki.transform.transformation import Transformation
 from loki.transform.transform_utilities import single_variable_declaration
 from loki.batch.item import ProcedureItem
+from loki.expression.expr_visitors import FindInlineCalls
 import loki.expression.symbols as sym
+from loki.expression.symbolic import is_dimension_constant
 
 
 __all__ = ['HoistVariablesAnalysis', 'HoistVariablesTransformation',
@@ -151,6 +153,7 @@ class HoistVariablesAnalysis(Transformation):
             item.trafo_data[self._key]["hoist_variables"] = []
 
         calls = FindNodes(CallStatement).visit(routine.body)
+        calls += FindInlineCalls().visit(routine.body)
         call_map = CaseInsensitiveDict((str(call.name), call) for call in calls)
 
         for child in successors:
@@ -255,7 +258,7 @@ class HoistVariablesTransformation(Transformation):
             routine.arguments += hoisted_temporaries
 
         call_map = {}
-        for call in FindNodes(CallStatement).visit(routine.body):
+        for call in FindNodes(CallStatement).visit(routine.body) + list(FindInlineCalls().visit(routine.body)):
             # Only process calls in this call tree
             if str(call.name) not in successor_map:
                 continue
@@ -272,9 +275,14 @@ class HoistVariablesTransformation(Transformation):
                     routine=routine, call=call, variables=hoisted_variables
                 )
             elif role == "kernel":
-                call_map[call] = self.kernel_call_argument_remapping(
-                    routine=routine, call=call, variables=hoisted_variables
-                )
+                if isinstance(call, CallStatement):
+                    call_map[call] = self.kernel_call_argument_remapping(
+                        routine=routine, call=call, variables=hoisted_variables
+                    )
+                else:
+                    self.kernel_inline_call_argument_remapping(
+                        routine=routine, call=call, variables=hoisted_variables
+                    )
 
         routine.body = Transformer(call_map).visit(routine.body)
 
@@ -356,6 +364,10 @@ class HoistVariablesTransformation(Transformation):
         new_args = tuple(v.clone(dimensions=None) for v in variables)
         return call.clone(arguments=call.arguments + new_args)
 
+    def kernel_inline_call_argument_remapping(self, routine, call, variables):
+        new_args = tuple(v.clone(dimensions=None) for v in variables)
+        vmap = {call: call.clone(parameters=call.parameters + new_args)}
+        routine.body = SubstituteExpressions(vmap).visit(routine.body)
 
 class HoistTemporaryArraysAnalysis(HoistVariablesAnalysis):
     """
@@ -400,13 +412,10 @@ class HoistTemporaryArraysAnalysis(HoistVariablesAnalysis):
         routine : :any:`Subroutine`
             The subroutine find the variables.
         """
-        return [var for var in routine.variables
+        variables = [var for var in routine.variables if isinstance(var, sym.Array)]
+        return [var for var in variables
                 if var not in routine.arguments    # local variable
-                and not var.type.parameter         # not a parameter
-                and isinstance(var, sym.Array)     # is an array
-                and (self.dim_vars is None         # if dim_vars not empty check if at least one dim is within dim_vars
-                     or any(dim_var in self.dim_vars for dim_var in FindVariables().visit(var.dimensions)))]
-
+                and not all(is_dimension_constant(d) for d in var.shape)]
 
 class HoistTemporaryArraysTransformationAllocatable(HoistVariablesTransformation):
     """
