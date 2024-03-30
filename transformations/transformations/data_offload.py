@@ -544,7 +544,7 @@ class GlobalVarOffloadTransformation(Transformation):
             copyin_variables = {v for v, _ in uses_symbols if v.parent}
             if update_variables:
                 update_device += (
-                    Pragma(keyword='acc', content=f'update device({",".join(v.name for v in update_variables)})'),
+                    Pragma(keyword='acc', content=f'enter data copyin({",".join(v.name for v in update_variables)})'),
                 )
             if copyin_variables:
                 update_device += (
