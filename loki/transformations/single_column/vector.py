@@ -276,12 +276,9 @@ class SCCRevectorTransformation(Transformation):
             The dimension specifying the horizontal vector dimension
         """
 
-        variable_map = routine.variable_map
-        bounds = horizontal.get_loop_bounds(routine)
-
         # Create a single loop around the horizontal from a given body
-        index = SCCBaseTransformation.get_integer_variable(routine, horizontal.index)
-        bounds = sym.LoopRange(bounds)
+        index = horizontal.get_index_variable(routine)
+        bounds = sym.LoopRange(horizontal.get_loop_bounds(routine))
 
         # Ensure we clone all body nodes, to avoid recursion issues
         vector_loop = ir.Loop(variable=index, bounds=bounds, body=Transformer().visit(section))

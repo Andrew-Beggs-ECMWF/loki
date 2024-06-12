@@ -82,24 +82,6 @@ class SCCBaseTransformation(Transformation):
 
         return False
 
-
-    @classmethod
-    def get_integer_variable(cls, routine, name):
-        """
-        Find a local variable in the routine, or create an integer-typed one.
-
-        Parameters
-        ----------
-        routine : :any:`Subroutine`
-            The subroutine in which to find the variable
-        name : string
-            Name of the variable to find the in the routine.
-        """
-        if not (v_index := routine.symbol_map.get(name, None)):
-            dtype = SymbolAttributes(BasicType.INTEGER)
-            v_index = sym.Variable(name=name, type=dtype, scope=routine)
-        return v_index
-
     @classmethod
     def resolve_masked_stmts(cls, routine, loop_variable):
         """
@@ -262,7 +244,7 @@ class SCCBaseTransformation(Transformation):
         bounds = self.horizontal.get_loop_bounds(routine)
 
         # Find the iteration index variable for the specified horizontal
-        v_index = self.get_integer_variable(routine, name=self.horizontal.index)
+        v_index = self.horizontal.get_index_variable(routine)
 
         # Associates at the highest level, so they don't interfere
         # with the sections we need to do for detecting subroutine calls

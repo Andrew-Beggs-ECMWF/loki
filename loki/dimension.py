@@ -6,6 +6,9 @@
 # nor does it submit to any jurisdiction.
 
 from loki.tools import as_tuple
+from loki.types import BasicType, SymbolAttributes
+from loki.expression import symbols as sym
+
 
 __all__ = ['Dimension']
 
@@ -134,6 +137,24 @@ class Dimension:
             exprs += list(self._index_aliases)
 
         return as_tuple(exprs)
+
+    def get_index_variable(self, routine):
+        """
+        Find the local index variable in the routine, or create an integer-typed one.
+
+        Parameters
+        ----------
+        routine : :any:`Subroutine`
+            The subroutine in which to find the variable
+        name : string
+            Name of the variable to find the in the routine.
+        """
+        if not (v_index := routine.symbol_map.get(self.index, None)):
+            dtype = SymbolAttributes(BasicType.INTEGER)
+            v_index = sym.Variable(name=self.index, type=dtype, scope=routine)
+            routine.variables += (v_index,)
+        return v_index
+
 
     def get_loop_bounds(self, routine):
         """
