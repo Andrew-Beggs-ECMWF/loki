@@ -82,31 +82,6 @@ class SCCBaseTransformation(Transformation):
 
         return False
 
-    @classmethod
-    def get_horizontal_loop_bounds(cls, routine, horizontal):
-        """
-        Check for horizontal loop bounds in a :any:`Subroutine`.
-
-        Parameters
-        ----------
-        routine : :any:`Subroutine`
-            Subroutine to perform checks on.
-        horizontal : :any:`Dimension`
-            :any:`Dimension` object describing the variable conventions used in code
-            to define the horizontal data dimension and iteration space.
-        """
-
-        bounds = ()
-        variables = routine.variables
-        for name, _bounds in zip(['start', 'end'], horizontal.bounds_expressions):
-            for bound in _bounds:
-                if bound.split('%', maxsplit=1)[0] in variables:
-                    bounds += (bound,)
-                    break
-            else:
-                raise RuntimeError(f'No horizontol {name} variable matching {_bounds[0]} found in {routine.name}')
-
-        return bounds
 
     @classmethod
     def get_integer_variable(cls, routine, name):
@@ -179,10 +154,6 @@ class SCCBaseTransformation(Transformation):
 
         bounds_str = f'{bounds[0]}:{bounds[1]}'
 
-        variable_map = routine.variable_map
-        bounds_v = (routine.resolve_typebound_var(bounds[0], variable_map),
-                    routine.resolve_typebound_var(bounds[1], variable_map))
-
         mapper = {}
         for stmt in FindNodes(ir.Assignment).visit(routine.body):
             ranges = [e for e in FindExpressions().visit(stmt)
@@ -190,7 +161,7 @@ class SCCBaseTransformation(Transformation):
             if ranges:
                 exprmap = {r: loop_variable for r in ranges}
                 loop = ir.Loop(
-                    variable=loop_variable, bounds=sym.LoopRange(bounds_v),
+                    variable=loop_variable, bounds=sym.LoopRange(bounds),
                     body=as_tuple(SubstituteExpressions(exprmap).visit(stmt))
                 )
                 mapper[stmt] = loop
@@ -288,7 +259,7 @@ class SCCBaseTransformation(Transformation):
             return
 
         # check for horizontal loop bounds in subroutine symbol table
-        bounds = self.get_horizontal_loop_bounds(routine, self.horizontal)
+        bounds = self.horizontal.get_loop_bounds(routine)
 
         # Find the iteration index variable for the specified horizontal
         v_index = self.get_integer_variable(routine, name=self.horizontal.index)

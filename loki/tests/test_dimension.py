@@ -8,6 +8,7 @@
 import pytest
 
 from loki import Subroutine, Dimension, FindNodes, Loop
+from loki.expression import symbols as sym
 from loki.frontend import available_frontends
 
 
@@ -71,3 +72,33 @@ end subroutine test_dimension_index
         _ = Dimension('test_dim_alias', bounds_aliases=('bnds%start',))
     with pytest.raises(RuntimeError):
         _ = Dimension('test_dim_alias', bounds_aliases=('bnds%start', 'some_other_bnds%end'))
+
+
+@pytest.mark.parametrize('frontend', available_frontends())
+def test_dimension_get_loop_bounds(frontend):
+    """
+    Test that :any:`Dimension` objects find the correct loop bound expressions.
+    """
+    fcode = """
+subroutine test_dimension_loop_bounds(nlon, start, end, arr)
+  integer, intent(in) :: NLON, START, END
+  real, intent(inout) :: arr(nlon)
+  real :: local_arr(1:nlon)
+  real :: range_arr(end-start+1)
+
+  arr(start:end) = 1.
+end subroutine test_dimension_loop_bounds
+"""
+    routine = Subroutine.from_source(fcode, frontend=frontend)
+
+    # Create the dimension object and make sure we match all array sizes
+    dim = Dimension(name='test_dim', size='nlon', bounds=('start', 'end'))
+    start, end = dim.get_loop_bounds(routine)
+    assert isinstance(start, sym.Scalar)
+    assert isinstance(end, sym.Scalar)
+    assert start, end == ('start', 'end')
+
+    # Test correct error handling
+    dim2 = Dimension(name='dim_nope', size='k', bounds=('a', 'b'))
+    with pytest.raises(RuntimeError):
+        _ = dim2.get_loop_bounds(routine)

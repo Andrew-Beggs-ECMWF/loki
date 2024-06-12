@@ -134,3 +134,35 @@ class Dimension:
             exprs += list(self._index_aliases)
 
         return as_tuple(exprs)
+
+    def get_loop_bounds(self, routine):
+        """
+        Get loop bound symbols from a given :any:`Subroutine`.
+
+        Parameters
+        ----------
+        routine : :any:`Subroutine`
+            Subroutine to retrieve variables from.
+
+        Returns
+        -------
+        tuple of :any:`Expression`
+            Pair of loop bound expressions
+        """
+        bounds = ()
+        # variables = routine.variables
+        variable_map = routine.variable_map
+        for name, _bounds in zip(['start', 'end'], self.bounds_expressions):
+            for bound in _bounds:
+                if bound.split('%', maxsplit=1)[0] in variable_map.values():
+                    bounds += (bound,)
+                    break
+            else:
+                raise RuntimeError(
+                    f'No horizontol {name} variable matching {_bounds[0]} found in {routine.name}'
+                )
+
+        return (
+            routine.resolve_typebound_var(bounds[0], variable_map),
+            routine.resolve_typebound_var(bounds[1], variable_map)
+        )
