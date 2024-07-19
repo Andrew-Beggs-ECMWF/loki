@@ -19,6 +19,7 @@ from loki.transformations.array_indexing import (
     promote_variables, demote_variables, normalize_range_indexing,
     invert_array_indices, flatten_arrays,
     normalize_array_shape_and_access, shift_to_zero_indexing,
+    LowerConstantArrayIndices
 )
 from loki.transformations.transpile import FortranCTransformation
 
@@ -733,3 +734,91 @@ def test_transform_flatten_arrays_call(tmp_path, frontend, builder, explicit_dim
     assert (b_flattened == b_ref.flatten(order='F')).all()
 
     builder.clean()
+
+@pytest.mark.parametrize('frontend', available_frontends())
+# @pytest.mark.parametrize('block_dim_arg', (False, True))
+# @pytest.mark.parametrize('recurse_to_kernels', (False, True))
+# def test_lower_constant_array_index(blocking, frontend, block_dim_arg, recurse_to_kernels):
+def test_lower_constant_array_indices(frontend):
+
+    block_dim_arg = False
+
+    fcode_driver = f"""
+subroutine driver(nlon,nlev,nb,var)
+  use kernel_mod, only: kernel
+  implicit none
+  integer, parameter :: param_1 = 1
+  integer, parameter :: param_2 = 2
+  integer, parameter :: param_3 = 5
+  integer, intent(in) :: nlon,nlev,nb
+  ! real, intent(inout) :: var(nlon,nlev,5,nb)
+  real, intent(inout) :: var(nlon,nlev,param_3,nb)
+  ! real :: some_var(nlon,nlev,5,nb)
+  integer :: ibl
+  integer :: offset
+  integer :: some_val
+  integer :: loop_start, loop_end
+  loop_start = 2
+  loop_end = nb
+  some_val = 0
+  offset = 1
+  !$omp test
+  do ibl=loop_start, loop_end
+    ! call kernel(nlon,nlev,var(:,:,1,ibl), var(:,:,2:5,ibl), offset, loop_start, loop_end{', ibl, nb' if block_dim_arg else ''})
+    call kernel(nlon,nlev,var(:,:,param_1,ibl), var(:,:,param_2:param_3,ibl), offset, loop_start, loop_end{', ibl, nb' if block_dim_arg else ''})
+  enddo
+end subroutine driver
+"""
+
+    fcode_kernel = f"""
+module kernel_mod
+implicit none
+contains
+subroutine kernel(nlon,nlev,var,another_var,icend,lstart,lend{', ibl, nb' if block_dim_arg else ''})
+  use compute_mod, only: compute
+  implicit none
+  integer, intent(in) :: nlon,nlev,icend,lstart,lend
+  real, intent(inout) :: var(nlon,nlev)
+  real, intent(inout) :: another_var(nlon,nlev,4)
+  {'integer, intent(in) :: ibl' if block_dim_arg else ''}
+  {'integer, intent(in) :: nb' if block_dim_arg else ''}
+  integer :: jk, jl, jt
+  var(:,:) = 0.
+  do jk = 1,nlev
+    do jl = 1, nlon
+      var(jl, jk) = 0.
+      do jt= 1,4
+        another_var(jl, jk, jt) = 0.0
+      end do
+    end do
+  end do
+  call compute(nlon,nlev,var)
+  call compute(nlon,nlev,var)
+end subroutine kernel
+end module kernel_mod
+"""
+
+    fcode_nested_kernel = """
+module compute_mod
+implicit none
+contains
+subroutine compute(nlon,nlev,var)
+  implicit none
+  integer, intent(in) :: nlon,nlev
+  real, intent(inout) :: var(nlon,nlev)
+  var(:,:) = 0.
+end subroutine compute
+end module compute_mod
+"""
+
+    nested_kernel_mod = Module.from_source(fcode_nested_kernel, frontend=frontend)
+    kernel_mod = Module.from_source(fcode_kernel, frontend=frontend, definitions=nested_kernel_mod)
+    driver = Subroutine.from_source(fcode_driver, frontend=frontend, definitions=kernel_mod)
+   
+    LowerConstantArrayIndices().apply(driver, role='driver', targets=('kernel',))
+    LowerConstantArrayIndices().apply(kernel_mod['kernel'], role='kernel', targets=('compute',))
+    LowerConstantArrayIndices().apply(nested_kernel_mod['compute'], role='kernel')
+
+    print(f"driver:\n{fgen(driver)}\n")
+    print(f"kernel:\n{fgen(kernel_mod['kernel'])}\n")
+    print(f"nested kernel:\n{fgen(nested_kernel_mod['compute'])}\n")
